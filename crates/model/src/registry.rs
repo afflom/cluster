@@ -108,13 +108,31 @@ impl Ledger {
                     }
                 }
             }
-            // No rules about a *class* of ID here. `CP-` recording a sample size,
-            // `CG-` being measured rather than asserted, `CN-` not existing at
-            // all --- each was a fact about a repository that had that class, and
-            // a rule enforcing a taxonomy the register does not have is a
-            // restriction on the first person to want one. A repository adding a
-            // class adds its rule here, in the commit that adds the first ID in
-            // it. The level rules above apply to every claim and stay.
+            // The first class rule this repository has (SPEC.md §19.2): an
+            // `OPEN-` row carries its sample size and its seed. An open claim is
+            // measured and reported, and a measurement with neither is a number
+            // with no way to tell whether it was taken once or a thousand times
+            // --- which is the difference between a reported quantity and an
+            // asserted one. The template left this slot empty on purpose and
+            // said a repository adding a class adds its rule in the commit that
+            // adds the first ID in it; this is that commit.
+            if c.id.starts_with("OPEN-") {
+                if c.level != Level::Open {
+                    return Err(ModelError::Inconsistent(format!(
+                        "{}: an OPEN- row is an `open` claim, not `{}` (SPEC.md §19.2)",
+                        c.id,
+                        c.level.as_str()
+                    )));
+                }
+                if c.sample_size.is_none() || c.seed.is_none() {
+                    return Err(ModelError::Inconsistent(format!(
+                        "{}: an open claim carries its sample_size and its seed. A measured \
+                         quantity with neither cannot be told apart from an asserted one \
+                         (R2, SPEC.md §19.2)",
+                        c.id
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -132,6 +150,28 @@ pub struct Ids {
     pub spec: String,
     /// One row per conformance ID.
     pub id: Vec<IdRow>,
+    /// The error types a shipped crate may let a caller see (R5).
+    ///
+    /// The template hard-coded this list in `xtask`, which made R5 a promise
+    /// about three names nobody could change without editing a gate. Reading it
+    /// from the model is what makes "every error a caller can see is one the
+    /// model sanctions" literally true rather than approximately so.
+    #[serde(default)]
+    pub error: Vec<SanctionedError>,
+}
+
+/// One error type a shipped crate is permitted to return (R5).
+#[derive(Debug, Clone, Deserialize)]
+pub struct SanctionedError {
+    /// The type's name, as it appears in a `Result<_, _>`.
+    pub name: String,
+    /// The shipped crate that defines it.
+    #[serde(rename = "crate")]
+    pub krate: String,
+    /// The conformance ID under which the error is a sanctioned outcome.
+    pub sanctioned_by: String,
+    /// What condition it reports.
+    pub statement: String,
 }
 
 /// One registered conformance ID.
@@ -143,8 +183,42 @@ pub struct IdRow {
     pub level: Level,
     /// The Gherkin suite the scenario belongs to.
     pub suite: String,
+    /// The lowest tier that can discharge this claim (`SPEC.md` §10.2).
+    ///
+    /// A model fact rather than a convention, because §19.2's rule for the
+    /// `CH-` class depends on it: a hardware claim is discharged only on real
+    /// nodes, and a `CH-` scenario collected by a simulated run would be a
+    /// false statement about a physical machine. Recording the tier here lets
+    /// the collector enforce that instead of trusting each tier to remember.
+    pub tier: Tier,
     /// What the ID claims.
     pub statement: String,
+}
+
+/// Which validation tier discharges a claim (`SPEC.md` §10.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+pub enum Tier {
+    /// Static: the render diff, container lint, and everything checkable
+    /// without booting. Runs in `just vv`.
+    T0,
+    /// One node boots under OVMF and the health predicate passes.
+    T1,
+    /// Three nodes, mesh wired, failover, and a full simulated rollout.
+    T2,
+    /// Real hardware. The only tier that can establish a `CH-` claim.
+    T3,
+}
+
+impl Tier {
+    /// The token used in `model/ids.toml` and in generated documentation.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::T0 => "T0",
+            Self::T1 => "T1",
+            Self::T2 => "T2",
+            Self::T3 => "T3",
+        }
+    }
 }
 
 impl Ids {

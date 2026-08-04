@@ -1,51 +1,93 @@
-# Template
+# cluster
 
-A repository template with the gate machinery and none of the content.
+Three Supermicro nodes as a hypervisor substrate for OCI workloads: devcontainers,
+GitHub Actions runners, and a small set of storage services. The host operating
+system is an appliance, built with bootc, and the cluster's entire definition
+lives here.
 
-`just vv` passes as it stands. It has no shipped crates, an empty claim
-register, and an empty ledger --- and every check re-arms the moment the first
-capability is added, because the anti-vacuity checks are keyed to the register
-rather than asserted outright.
+There is no configuration applied out of band, no node-local state that is not
+either declared here or explicitly designated as data, and no path by which a
+node comes to run software that did not pass the gate.
 
-## Start here
+`SPEC.md` is the specification. `AGENTS.md` defines R1 through R6 and is the
+brief for changing anything. `VERIFICATION.md` maps each gate to what it
+discharges and records the defect planted to prove it can fail.
 
-1. **Name it.** `Cargo.toml` has `CHANGEME` in `repository` and `homepage`, and
-   empty `keywords` and `categories`. They are inherited by every crate.
-2. **Rename the tooling crates if you want to.** `repo-model` and
-   `repo-conformance` are deliberately neutral; they are `publish = false` and
-   nothing outside the workspace sees them.
-3. **Add your first crate** under `crates/`. It is *shipped* unless its manifest
-   says `publish = false`, and the gates read that rather than a list.
-4. **Add your first capability** in the order `AGENTS.md` sets out: a row in
-   `model/ids.toml`, a scenario in `features/suites/`, a failing test named for
-   the ID, then the implementation.
+## The shape of it
 
-## What is here
+| Node | Role | Runs | Updates |
+| --- | --- | --- | --- |
+| `n1` | `storage-ci` | registry, object store, NFS, observability, control plane, 2 CI runners | 3rd |
+| `n2` | `compute` | devcontainers, the Remote-SSH target | 2nd |
+| `n3` | `bench` | one measurement job at a time, nothing else | 1st |
+
+A direct-attached 10 GbE triangle joins them, `/31` per link, every mesh service
+bound to a loopback. `n3` is first to update because a failure there costs a
+measurement window rather than the pipeline; `n1` is last because it carries the
+machinery needed to diagnose a bad update.
+
+## R1 over infrastructure
+
+The template this was cut from applies R1 to documentation: `CONFORMANCE.md` is
+generated from `model/`, and a hand-edit is a gate failure. This repository
+extends the same rule to every infrastructure artifact.
 
 | Path | What it is |
 | --- | --- |
-| `model/` | the single source of every claim: the ID register, the ledger, the authorities |
+| `model/` | the single source: nodes, network, images, policy, and the claim register |
+| `generated/` | **rendered** from `model/`, committed, diff-gated |
 | `features/suites/` | one Gherkin scenario per conformance ID |
-| `crates/model` | parses `model/*.toml` and generates `CONFORMANCE.md` |
-| `crates/conformance` | the BDD runner and the honesty meta-gate |
-| `xtask/` | the gates: `check-model`, `audit-limits`, `audit-deferral` |
+| `crates/cluster-model` | the typed model and the renderers |
+| `crates/cluster-health` | the health predicate, shipped in every image |
+| `crates/cluster-updater` | the rollout ordering predicate, drain, and apply |
+| `crates/cluster-ctl` | the control plane: sessions, rollout state, the API |
+| `crates/cluster-web` | the Pages UI, a Leptos SPA on wasm32 |
+| `crates/cluster-harness` | QEMU orchestration and the tier collector |
+| `images/` | one Containerfile per variant |
+| `xtask/` | the gates |
+
+A hand-edited `.network` file is the same class of error as a hand-edited
+`CONFORMANCE.md`, and `cargo xtask check-render` reports it the same way --- in
+both directions: an artifact nothing asserts about fails, and a claim that
+touches no artifact fails too.
 
 ## The gate
 
 | Recipe | What it does |
 | --- | --- |
-| `just vv` | the whole gate; everything below in order |
-| `just fmt-check` | formatting |
-| `just model` | the repository gates: R1, R4, R5 |
-| `just lint` | clippy at `-D warnings` |
-| `just test` | the workspace suite |
-| `just features` | every optional feature compiles, with its tests |
+| `just vv` | the whole acceptance gate --- this is T0 |
+| `just render` | rewrite `generated/` from `model/` |
+| `just model` | the repository gates: R1, R4, R5, and the wiring check |
 | `just bdd` | R3 and the honesty meta-gate |
 | `just deny` | advisories, bans, licences and sources (needs `cargo-deny`) |
+| `just t1` / `just t2` / `just t3` | the guest and hardware tiers |
 
-`AGENTS.md` defines R1 through R6 and is the brief for changing anything here.
-`VERIFICATION.md` maps each gate to what it discharges and records the defect
-planted to prove it can fail.
+The tiers are separate recipes on purpose: T2 takes about thirty-five minutes and
+T3 needs the real fleet, and a gate a developer will not run is a gate that gets
+bypassed. Which tier discharges which claim is a model fact, not a convention ---
+`model/ids.toml` carries a `tier` column, and a hardware claim registered below
+T3 fails `check-model`.
+
+## The register
+
+61 claims across twelve classes, each discharged at exactly one tier.
+
+| Suite | Claims | Tier |
+| --- | --- | --- |
+| `model` | 4 | T0 |
+| `definition` | 11 | T0 |
+| `image` | 4 | T0 |
+| `boot` | 6 | T0, T1 |
+| `network` | 3 | T2 |
+| `storage` | 3 | T2 |
+| `workload` | 2 | T2 |
+| `update` | 10 | T0, T2 |
+| `reclaim` | 5 | T0 |
+| `control` | 5 | T0 |
+| `lifecycle` | 4 | T0, T2 |
+| `hardware` | 4 | T3 |
+
+`CONFORMANCE.md` is generated from `model/ids.toml` and carries every statement.
 
 ## Claim discipline
 
@@ -59,8 +101,26 @@ registers are blurred:
 | `open` | measured and reported, **never asserted**. |
 
 `CONFORMANCE.md` is generated from `model/`, so a claim cannot exist in the
-documentation without a register row, or in the register without appearing in
-the documentation.
+documentation without a register row, or in the register without appearing in the
+documentation. `SPEC.md` §20 lists what is cited rather than constructed; §21
+lists what this repository deliberately does not claim at all --- including that
+`n3` yields stable measurements, which is the thing the whole measurement node
+exists to make plausible and which no gate here can establish.
+
+## Adding a capability
+
+In this order, because the order is the discipline (R3):
+
+1. A row in `model/ids.toml`, with its level and its tier.
+2. A scenario in `features/suites/`, tagged with the ID.
+3. A failing test whose name **ends in the ID**, lowercased with underscores.
+4. The implementation.
+5. `just vv`.
+
+Every class `SPEC.md` §19.2 declares now has rows. A new one adds its rule to
+`crates/model` in the commit that adds its first ID, which is what `registry.rs`
+has said since the template --- the `OPEN-`, `CD-`, `CH-` and `CG-` rules were
+each written that way.
 
 ## Licence
 
@@ -72,5 +132,5 @@ Dual-licensed under either of
 at your option.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in this work by you, as defined in the Apache-2.0 licence, shall
-be dual-licensed as above, without any additional terms or conditions.
+for inclusion in this work by you, as defined in the Apache-2.0 licence, shall be
+dual-licensed as above, without any additional terms or conditions.

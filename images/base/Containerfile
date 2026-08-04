@@ -1,0 +1,85 @@
+# The base every node image is built from (SPEC.md §8.1).
+#
+# Pinned by digest, never by the floating tag. A repository this careful about
+# digest-pinning downstream cannot float its upstream; a scheduled workflow opens
+# a PR bumping it weekly and the bump passes the full gate like any other change.
+#
+# The digest below is the one in model/images.toml. It is written here rather
+# than substituted at build time because a Containerfile is the artifact a
+# reader checks, and `--build-arg` would put the pin somewhere they would have to
+# go looking for it. `CI-01` asserts the two agree.
+FROM quay.io/centos-bootc/centos-bootc@sha256:2b7e3b1abf8db094d1efb083721dc0f72e6feeef2355fc16ea010d0266b2bb95
+
+# CentOS Stream 10 over Fedora bootc for kernel stability: a measurement
+# environment that moves underneath a longitudinal series silently invalidates
+# comparisons across it.
+
+RUN dnf -y install \
+      openssh-server chrony nftables greenboot greenboot-default-health-checks \
+      container-selinux policycoreutils policycoreutils-python-utils \
+      jq iproute ethtool \
+ && dnf clean all
+
+# Tailscale is not in the EL10 repositories; the vendor repository is the one
+# upstream that ships it, and it is added deliberately rather than vendored.
+RUN dnf -y config-manager --add-repo https://pkgs.tailscale.com/stable/centos/10/tailscale.repo \
+ && dnf -y install tailscale \
+ && dnf clean all
+
+# The two binaries every node must have before it can be trusted to update
+# itself unattended (§10.1, §13). Built by the workflow and copied in, never
+# installed from a repository.
+COPY cluster-health cluster-updater /usr/bin/
+RUN chmod 0755 /usr/bin/cluster-health /usr/bin/cluster-updater
+
+# The rendered tree. R1 over infrastructure: these files are diff-gated against
+# model/ by `cargo xtask check-render`, so a hand-edit is a build failure rather
+# than a surprise on a node (§7.2).
+ARG NODE
+COPY generated/${NODE}/systemd-network/ /usr/lib/systemd/network/
+COPY generated/${NODE}/sysctl.d/ /usr/lib/sysctl.d/
+COPY generated/${NODE}/nftables.conf /usr/lib/cluster/nftables.conf
+COPY generated/${NODE}/hosts /usr/lib/cluster/hosts
+COPY generated/${NODE}/kargs.d/ /usr/lib/bootc/kargs.d/
+COPY generated/${NODE}/systemd/ /usr/lib/systemd/system/
+COPY generated/${NODE}/greenboot/ /usr/lib/greenboot/check/required.d/
+RUN chmod 0755 /usr/lib/greenboot/check/required.d/*.sh
+
+# What this node will stage, and where it pulls from (§12.3, §14.2). The policy
+# is the only thing between an unattended node and an arbitrary image, so it
+# ships in the image rather than being written onto a node afterwards.
+COPY generated/${NODE}/containers/ /etc/containers/
+COPY generated/${NODE}/journald.conf.d/ /usr/lib/systemd/journald.conf.d/
+
+# Host policy the model declares: key-only SSH, enforcing SELinux, and the
+# greenboot deadline and attempt count. Rendered rather than written here,
+# because a build that declared them too would give one decision two sources
+# (§8.1, §8.3, §13.3).
+COPY generated/${NODE}/sshd_config.d/ /etc/ssh/sshd_config.d/
+COPY generated/${NODE}/selinux/config /etc/selinux/config
+COPY generated/${NODE}/greenboot.conf /etc/greenboot/greenboot.conf
+
+# Rendered configuration is inert until something loads it. /etc is three-way
+# merged on update (§5.2), so writing these at *build* time is the bootc grain:
+# they are a property of the image, not of what last ran on the node.
+RUN install -D -m 0644 /usr/lib/cluster/hosts /etc/hosts  && install -D -m 0644 /usr/lib/cluster/nftables.conf /etc/sysconfig/nftables.conf
+
+# Recording an attachment on every SSH connection is what keeps a session
+# somebody is using from looking idle to §15.3's thresholds.
+COPY generated/${NODE}/sshrc /etc/ssh/sshrc
+RUN chmod 0644 /etc/ssh/sshrc
+
+RUN systemctl enable nftables.service
+
+# SELinux policy is compiled at build time and shipped, never compiled at runtime
+# on a read-only root (§8.3).
+COPY selinux/cluster.te /usr/share/selinux/cluster.te
+RUN checkmodule -M -m -o /tmp/cluster.mod /usr/share/selinux/cluster.te \
+ && semodule_package -o /usr/share/selinux/cluster.pp -m /tmp/cluster.mod \
+ && rm -f /tmp/cluster.mod
+
+RUN systemctl enable cluster-health.service cluster-updater.timer cluster-gc.timer
+
+# `bootc container lint` is T0's first gate: it catches an image that is not a
+# valid bootc host before anything tries to boot one.
+RUN bootc container lint

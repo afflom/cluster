@@ -78,18 +78,46 @@ pub fn render_conformance(model: &Model) -> String {
         let _ = writeln!(w);
         let _ = writeln!(w, "## {suite}");
         let _ = writeln!(w);
-        let _ = writeln!(w, "| ID | Level | Statement |");
-        let _ = writeln!(w, "| --- | --- | --- |");
+        let _ = writeln!(w, "| ID | Level | Tier | Statement |");
+        let _ = writeln!(w, "| --- | --- | --- | --- |");
         for r in rows {
             let statement = r.statement.replace('\n', " ").replace('|', "\\|");
             let _ = writeln!(
                 w,
-                "| `{}` | `{}` | {} |",
+                "| `{}` | `{}` | `{}` | {} |",
                 r.id,
                 r.level.as_str(),
+                r.tier.as_str(),
                 statement.trim()
             );
         }
+    }
+
+    // R5 made visible. The allowlist `audit-limits` enforces is a model fact,
+    // so it belongs in the generated document like every other model fact ---
+    // otherwise the one register that decides what a caller may see would be
+    // the one register nobody reading CONFORMANCE.md could find.
+    let _ = writeln!(w);
+    let _ = writeln!(w, "## Sanctioned errors");
+    let _ = writeln!(w);
+    let _ = writeln!(
+        w,
+        "Every error a caller can see (R5). `cargo xtask audit-limits` reads this"
+    );
+    let _ = writeln!(w, "list; a `Result` over anything else fails the gate.");
+    let _ = writeln!(w);
+    let _ = writeln!(w, "| Error | Crate | Sanctioned by | Reports |");
+    let _ = writeln!(w, "| --- | --- | --- | --- |");
+    for e in &model.ids.error {
+        let statement = e.statement.replace('\n', " ").replace('|', "\\|");
+        let _ = writeln!(
+            w,
+            "| `{}` | `{}` | `{}` | {} |",
+            e.name,
+            e.krate,
+            e.sanctioned_by,
+            statement.trim()
+        );
     }
 
     let _ = writeln!(w);

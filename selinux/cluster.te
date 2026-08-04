@@ -1,0 +1,26 @@
+# Custom SELinux policy, compiled at image build time (SPEC.md §8.3).
+#
+# Compiled by the base Containerfile into /usr/share/selinux/cluster.pp and
+# loaded by a oneshot unit ordered before workloads. Nothing compiles policy at
+# runtime, because root is read-only and a policy build on a running node would
+# be a write to a filesystem that does not take writes.
+#
+# The module is deliberately small. Every Quadlet volume mount carries :Z or :z
+# from model/images.toml (CD-05), which is what removes the need for per-service
+# rules --- a policy that grew a rule per container would be a policy nobody
+# could review, and `CB-` treats an AVC denial as a build failure precisely so
+# the pressure to add one shows up at build time rather than at 2am.
+
+module cluster 1.0;
+
+require {
+    type container_t;
+    type container_file_t;
+    class dir { search getattr };
+}
+
+# Container graph storage is on a dedicated filesystem on n2 and n3 (§5.1), and
+# the mount point's parent is traversed by the runtime before any relabelled
+# content is reached. Without this the first start after a fresh install denies
+# on the directory rather than on anything inside it.
+allow container_t container_file_t:dir { search getattr };

@@ -1,0 +1,31 @@
+{
+  "id": "tunnel",
+  "version": "1.0.0",
+  "name": "Cluster VS Code Remote Tunnel",
+  "description": "Registers a VS Code Remote Tunnel named for the cluster session, supervised, so the browser is the only client a developer needs (SPEC.md §11.1).",
+  "documentationURL": "https://github.com/afflom/cluster/blob/main/SPEC.md",
+  "options": {
+    "sessionId": {
+      "type": "string",
+      "default": "",
+      "description": "The cluster session id. The tunnel is named <prefix><sessionId>, matching the SSH alias so one identifier addresses the session on both paths."
+    },
+    "namePrefix": {
+      "type": "string",
+      "default": "dc-",
+      "description": "Rendered from model/policy.toml. Present as an option so the Feature carries no second copy of a model fact."
+    },
+    "backoffInitialSeconds": {
+      "type": "string",
+      "default": "2",
+      "description": "Supervisor backoff floor, from model/policy.toml."
+    },
+    "backoffMaxSeconds": {
+      "type": "string",
+      "default": "60",
+      "description": "Supervisor backoff ceiling. Backoff rather than a tight loop: a tunnel failing because its token expired would otherwise spin against the identity provider."
+    }
+  },
+  "entrypoint": "/usr/local/share/cluster-tunnel/entrypoint.sh",
+  "installsAfter": ["ghcr.io/devcontainers/features/common-utils"]
+}

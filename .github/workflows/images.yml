@@ -1,0 +1,164 @@
+# Build once, validate that digest, promote that digest (SPEC.md §9.2).
+#
+# The images are built here and never rebuilt between validation and
+# publication. Every downstream job takes the digest this job captured, so a
+# tier can never validate something other than what would be promoted.
+name: images
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # T2 nightly as well as per-PR (§10.2).
+    - cron: "0 3 * * *"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      n1: ${{ steps.push.outputs.n1 }}
+      n2: ${{ steps.push.outputs.n2 }}
+      n3: ${{ steps.push.outputs.n3 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Hosted runners provide roughly 14 GB free, which does not hold three
+      # bootc disk images plus a toolchain (§9.4).
+      - name: Reclaim disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
+      - name: Build the node binaries
+        run: |
+          cargo build --release \
+            -p cluster-health -p cluster-updater -p cluster-ctl -p devcontainer-agent
+          cp target/release/cluster-health target/release/cluster-updater \
+             target/release/cluster-ctl target/release/devcontainer-agent .
+
+      - uses: redhat-actions/podman-login@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: push
+        name: Build and push, capturing each digest
+        run: |
+          set -euo pipefail
+          for node in n1 n2 n3; do
+            # §8.1 puts the rendered networkd and hosts files in the base, so the
+            # base is built per node. The variant then layers its own delta.
+            podman build --platform linux/amd64 --build-arg NODE="$node" \
+              -f images/base/Containerfile -t "cluster-base-$node" .
+            podman build --platform linux/amd64 --build-arg BASE="localhost/cluster-base-$node" \
+              -f "images/$node/Containerfile" \
+              -t "ghcr.io/${{ github.repository }}/$node:ci-${{ github.sha }}" .
+            podman push "ghcr.io/${{ github.repository }}/$node:ci-${{ github.sha }}"
+            digest=$(podman inspect --format '{{.Digest}}' \
+              "ghcr.io/${{ github.repository }}/$node:ci-${{ github.sha }}")
+            echo "$node=$digest" >> "$GITHUB_OUTPUT"
+          done
+
+  t1:
+    # One node boots under OVMF and the health predicate passes (§10.2).
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Install the guest tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
+
+      - name: Build the disk the tier boots
+        run: |
+          set -euo pipefail
+          mkdir -p target/harness
+          # bootc-image-builder turns the promoted container into a disk. The
+          # tier boots that, not a hand-made image, so what T1 asserts over is
+          # the artifact the fleet would install.
+          sudo podman run --rm --privileged \
+            --security-opt label=type:unconfined_t \
+            -v ./target/harness:/output \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            quay.io/centos-bootc/bootc-image-builder:latest \
+            --type qcow2 --local \
+            "ghcr.io/${{ github.repository }}/n3:ci-${{ github.sha }}"
+          sudo mv target/harness/qcow2/disk.qcow2 target/harness/base.qcow2
+          sudo chown "$USER" target/harness/base.qcow2
+
+      # GitHub documents nested virtualization on hosted runners as possible but
+      # not supported, and /dev/kvm availability is reported as inconsistent
+      # (§9.4). The harness reports absence as an explicit skip with exit 3 and
+      # never falls back to TCG. T1 may therefore skip --- and a skip is recorded
+      # as a skip here, not swallowed: T2 runs where KVM is guaranteed, so
+      # nothing is promoted on a skipped tier.
+      - name: T1
+        run: |
+          set +e
+          just t1
+          code=$?
+          if [ "$code" -eq 3 ]; then
+            echo "::notice title=T1 skipped::No /dev/kvm on this runner; nothing was tested. T2 covers it."
+            exit 0
+          fi
+          exit "$code"
+        env:
+          CLUSTER_TARGET_DIGEST: ${{ needs.build.outputs.n3 }}
+          CLUSTER_OVMF: /usr/share/OVMF/OVMF_CODE.fd
+
+  t2:
+    # Three nodes, mesh wired, failover, and a full simulated rollout with drain
+    # and rollback. Self-hosted on n1: real KVM, 2 TB of disk, no emulation tax.
+    #
+    # Not circular: n1 runs the *previously promoted* image while validating the
+    # candidate in guests (§9.4).
+    needs: build
+    runs-on: [self-hosted, linux, x64, cluster, ci]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the disk the tier boots
+        run: |
+          set -euo pipefail
+          mkdir -p target/harness
+          sudo podman run --rm --privileged \
+            --security-opt label=type:unconfined_t \
+            -v ./target/harness:/output \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            quay.io/centos-bootc/bootc-image-builder:latest \
+            --type qcow2 --local \
+            "ghcr.io/${{ github.repository }}/n1:ci-${{ github.sha }}"
+          sudo mv target/harness/qcow2/disk.qcow2 target/harness/base.qcow2
+
+      - name: Build an unsigned image, for the claim that it is refused
+        run: |
+          set -euo pipefail
+          # In this repository's own namespace, so the reference looks exactly
+          # like one the node would accept and only the signature distinguishes
+          # it. A foreign reference would prove nothing (§12.3).
+          podman tag "ghcr.io/${{ github.repository }}/n3:ci-${{ github.sha }}" \
+            "ghcr.io/${{ github.repository }}/n3:unsigned-${{ github.sha }}"
+          podman push "ghcr.io/${{ github.repository }}/n3:unsigned-${{ github.sha }}"
+
+      # No skip path. On n1 KVM is guaranteed, so its absence means the node is
+      # broken rather than the harness being portable --- and treating that as a
+      # skip would let a broken CI host promote images (§9.4).
+      - run: just t2
+        env:
+          CLUSTER_TARGET_DIGEST: ${{ needs.build.outputs.n1 }}
+          CLUSTER_PREVIOUS_STABLE: ghcr.io/${{ github.repository }}/n1:stable
+          CLUSTER_UNSIGNED_IMAGE: ghcr.io/${{ github.repository }}/n3:unsigned-${{ github.sha }}

@@ -1,0 +1,49 @@
+[package]
+name = "cluster-ctl"
+description = "The control plane: session registry, rollout state, and the API the UI speaks to (SPEC.md §15, §16)."
+# Shipped, and §16.1 says so explicitly: an HTTP API is precisely the surface R5
+# exists for. Every error a caller can see is one model/ids.toml sanctions.
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# `server` carries the HTTP surface and the database. It is on by default and
+# every capability ships enabled --- this is not R4's "capability behind a flag
+# that turns it off", which is about work that is not finished.
+#
+# It exists because `cluster-web` compiles to wasm32 and must link the *types*
+# on this API's wire without dragging in axum, tokio and a bundled SQLite, none
+# of which build for that target. The alternative is the UI restating the wire
+# shape, which would give the API's contract two sources --- exactly what R1
+# forbids. `just features` compiles both configurations for that reason.
+[features]
+default = ["server"]
+server = ["dep:axum", "dep:tokio", "dep:rusqlite", "dep:cluster-updater"]
+
+[dependencies]
+cluster-health = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+axum = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "signal"], optional = true }
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+# The drain planner. §14.3's capacity decision is `cluster-updater`'s, used here
+# rather than reimplemented: CU-05 checks the cap is enforced and the plan is
+# deterministic, and a second copy of that arithmetic would be a second thing
+# for those claims to be true of. Server-only, so the wasm bundle does not carry
+# a rollout planner it will never run.
+cluster-updater = { version = "0.1.0", path = "../cluster-updater", optional = true }
+
+[[bin]]
+name = "cluster-ctl"
+path = "src/main.rs"
+required-features = ["server"]
+
+[lints]
+workspace = true

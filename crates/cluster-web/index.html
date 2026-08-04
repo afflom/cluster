@@ -1,0 +1,15 @@
+<!doctype html>
+<!-- The Pages UI's shell (SPEC.md §16.3). Trunk builds the wasm and injects it.
+
+     Deliberately minimal: the SPA is entirely static, its only build-time
+     configuration is the API base URL from a repository variable, and all state
+     comes from cluster-ctl at runtime. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>cluster</title>
+    <link data-trunk rel="rust" data-bin="cluster-web" data-type="main" />
+  </head>
+  <body></body>
+</html>

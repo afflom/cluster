@@ -1,0 +1,31 @@
+[package]
+name = "cluster-web"
+description = "The Pages UI: a Leptos SPA compiled to wasm32 (SPEC.md §16.3)."
+# Shipped under the template's definition --- it has no `publish = false` --- so
+# R5 binds here too. The UI reports conditions the model sanctions and invents
+# none of its own.
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# Rust rather than TypeScript for one practical reason beyond uniformity:
+# `cargo deny` (R6) already covers this dependency graph, so the UI's supply
+# chain is gated by the same rule as everything else. A package.json would be a
+# second dependency graph under no rule at all (§16.3).
+#
+# `cluster-ctl` without default features: the wire types, not the server. The
+# UI therefore cannot drift from the API's contract, because it links it.
+[dependencies]
+cluster-ctl = { version = "0.1.0", path = "../cluster-ctl", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+leptos = { version = "0.8", features = ["csr"] }
+
+[lints]
+workspace = true

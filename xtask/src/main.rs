@@ -11,6 +11,8 @@ use std::process::ExitCode;
 use repo_model::{codegen, Model};
 
 mod audit;
+mod render;
+mod wiring;
 
 fn main() -> ExitCode {
     let task = std::env::args()
@@ -21,6 +23,9 @@ fn main() -> ExitCode {
 
     let result = match task.as_str() {
         "check-model" => check_model(&root, write),
+        "check-render" => render::check_render(&root, write),
+        "render" => render::check_render(&root, true),
+        "check-wiring" => wiring::check_wiring(&root),
         "audit-limits" => audit::audit_limits(&root),
         "audit-deferral" => audit::audit_deferral(&root),
         "validate" => validate(&root),
@@ -29,11 +34,14 @@ fn main() -> ExitCode {
                 "cargo xtask <task>\n\
                  \n\
                  check-model       R1: model/*.toml is the single source; regenerate and diff\n\
-                 audit-limits      R5:  no bound that cannot be traced to a parameter\n\
+                 check-render      R1 over infrastructure: generated/ equals the model\n\
+                 render            rewrite generated/ from the model\n\
+                 check-wiring      R1: nothing dangles and nothing rendered is inert\n\
+                 audit-limits      R5: no error a caller sees that the model does not sanction\n\
                  audit-deferral    R4: no deferral marker, no stub, no capability behind a flag\n\
                  validate          run every gate above\n\
                  \n\
-                 --write           check-model only: rewrite the generated file"
+                 --write           check-model and check-render: rewrite the generated files"
             );
             return ExitCode::from(2);
         }
@@ -91,6 +99,8 @@ fn check_model(root: &Path, write: bool) -> Result<(), Fail> {
 /// The whole normative acceptance gate, in one place.
 fn validate(root: &Path) -> Result<(), Fail> {
     check_model(root, false)?;
+    render::check_render(root, false)?;
+    wiring::check_wiring(root)?;
     audit::audit_limits(root)?;
     audit::audit_deferral(root)?;
     println!("validate: every gate passed");

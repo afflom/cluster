@@ -1,0 +1,72 @@
+# The Pages UI (SPEC.md §16.3).
+#
+# Entirely static. Its only build-time configuration is the API base URL, from a
+# repository variable; all state comes from cluster-ctl at runtime.
+name: pages
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+      - run: trunk build --release crates/cluster-web/index.html
+        env:
+          CLUSTER_API_BASE: ${{ vars.CLUSTER_API_BASE }}
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: crates/cluster-web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    steps:
+      - uses: actions/deploy-pages@v4
+
+  # §16.3: the same bundle, served from n1 at the origin the API is on.
+  #
+  # Same-origin has no preflight and no browser policy between a page and the
+  # API it was built for --- which retires the whole Local Network Access risk
+  # class, including the case where Chrome later reclassifies CGNAT or an
+  # enterprise policy blocks the prompt. Pages stays canonical and stays the
+  # versioned artifact; this is the route that always works.
+  #
+  # It ships *with* the Pages deployment rather than after it. A UI published to
+  # Pages alone, pending a mirror to follow, is a UI whose one guaranteed route
+  # does not exist yet (§22).
+  mirror:
+    needs: build
+    runs-on: [self-hosted, linux, x64, cluster, ci]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: github-pages
+          path: bundle
+      - name: Install the bundle where the control plane serves it
+        run: |
+          set -euo pipefail
+          tar -xf bundle/artifact.tar -C bundle
+          rm -f bundle/artifact.tar
+          sudo install -d -m 0755 /var/lib/cluster-ctl/web
+          sudo rsync --archive --delete bundle/ /var/lib/cluster-ctl/web/
+          sudo restorecon -R /var/lib/cluster-ctl/web

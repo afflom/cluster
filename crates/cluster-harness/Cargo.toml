@@ -1,0 +1,45 @@
+[package]
+name = "cluster-harness"
+description = "QEMU orchestration and the tier collector for T1, T2 and T3 (SPEC.md §10.2, §10.3)."
+# Dev and CI only. It boots guests and asserts over them; nothing a node runs
+# reaches it, so R5 does not bind and it may use std freely.
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+cluster-model = { workspace = true }
+cluster-health = { workspace = true }
+cluster-updater = { version = "0.1.0", path = "../cluster-updater" }
+repo-model = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# The guest and hardware tiers. `test = false` keeps them out of `cargo test`,
+# so `just vv` never claims to have discharged a claim it did not boot anything
+# to check --- a tier that passed without a guest is the vacuous gate AGENTS.md
+# warns about. `just t1` / `t2` / `t3` run them by name.
+[[test]]
+name = "t1"
+path = "tests/t1.rs"
+test = false
+
+[[test]]
+name = "t2"
+path = "tests/t2.rs"
+test = false
+
+[[test]]
+name = "t3"
+path = "tests/t3.rs"
+test = false
+
+[lints]
+workspace = true

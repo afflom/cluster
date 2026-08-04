@@ -1,0 +1,32 @@
+# Publish the devcontainer tunnel Feature (SPEC.md §11.1, §22 step 7).
+#
+# The Feature has to exist before any session can be started with it, and before
+# any CW- scenario can exercise it. It is versioned independently of the node
+# images because it is consumed by `devcontainer up --additional-features` at
+# session creation, not baked into a node.
+name: feature
+on:
+  push:
+    branches: [main]
+    paths:
+      - "features-src/**"
+      - ".github/workflows/feature.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: devcontainers/action@v1
+        with:
+          publish-features: "true"
+          base-path-to-features: "./features-src"
+          oci-registry: ghcr.io
+          features-namespace: ${{ github.repository }}/features
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

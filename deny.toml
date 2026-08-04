@@ -4,11 +4,23 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-# No ignores. An ignore outlives the dependency that needed it, and then it is an
-# advisory nobody will re-examine; each one added here should name the crate it
-# excuses and the reason there is no upgrade, so the next reader can tell whether
-# it still applies.
-ignore = []
+# Each ignore names the crate it excuses and why there is no upgrade, so the next
+# reader can tell whether it still applies. An ignore that outlives its
+# dependency is an advisory nobody will re-examine.
+ignore = [
+  # RUSTSEC-2024-0436 --- `paste`, archived by its author. Reached only through
+  # `either_of`, a build-time proc-macro in Leptos's reactive graph
+  # (cluster-web). It is not an unsound or vulnerable crate: the advisory is a
+  # maintenance notice. Upgrading Leptos 0.7 -> 0.8 did not drop it, so there is
+  # no version of the dependency that avoids it today. Re-examine when Leptos
+  # moves off `either_of`, and delete this line then.
+  "RUSTSEC-2024-0436",
+  # RUSTSEC-2026-0173 --- `proc-macro-error2`, confirmed unmaintained. Reached
+  # through `leptos_macro` and `reactive_stores_macro`, both proc-macro crates
+  # that run at build time and ship in nothing. Same maintenance-notice shape,
+  # same absence of an upgrade that avoids it. Delete when Leptos drops it.
+  "RUSTSEC-2026-0173",
+]
 
 [licenses]
 version = 2
@@ -22,7 +34,23 @@ version = 2
 # A dependency arriving under a licence not below fails this gate. That is the
 # point: it is a decision a reviewer makes at the time, not one a pre-granted
 # allowance made for them in advance.
-allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
+# Each entry was added when the dependency that needed it was added, which is
+# the decision this list exists to make visible:
+#
+#   BSD-3-Clause  `matchit`, axum's path router (cluster-ctl)
+#   BSL-1.0       `konst` / `const_format`, compile-time string formatting,
+#                 reached through Leptos (cluster-web)
+#   Zlib          `foldhash`, hashbrown's default hasher, reached through Leptos
+#   CC0-1.0       `base16`, hex encoding, reached through Leptos
+allow = [
+  "Apache-2.0",
+  "MIT",
+  "Unicode-3.0",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "Zlib",
+  "CC0-1.0",
+]
 confidence-threshold = 0.93
 
 [bans]

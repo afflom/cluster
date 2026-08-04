@@ -1,0 +1,99 @@
+# The weekly base-image bump (SPEC.md §8.1).
+#
+# The base is pinned by digest and never by the floating tag, which means
+# somebody has to move the pin --- and "somebody" on a schedule is the only
+# version of that which actually happens. A pin nobody bumps is a fleet running
+# a kernel from whenever the repository was written.
+#
+# The bump opens a pull request and passes the full gate like any other change.
+# It does not push to main: §9.3 says CI never commits to the repository, and a
+# base-image change is exactly the sort that T2 exists to catch.
+name: bump
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  base-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve the upstream digest
+        id: upstream
+        run: |
+          set -euo pipefail
+          image=$(grep -oP '^image = "\K[^"]+' model/images.toml)
+          tag=$(grep -oP '^tag = "\K[^"]+' model/images.toml)
+          resolved_on=$(grep -oP '^resolved_on = "\K[^"]+' model/images.toml)
+
+          # How stale the pin is, from the date the model records. This is what
+          # `resolved_on` is for: without it the bump has no way to say whether
+          # it is doing something or nothing.
+          age=$(( ( $(date +%s) - $(date -d "$resolved_on" +%s) ) / 86400 ))
+          echo "The pin was resolved $age day(s) ago, on $resolved_on."
+
+          headers=$(mktemp)
+          curl -sS -m 60 \
+            -H 'Accept: application/vnd.oci.image.index.v1+json' \
+            -D "$headers" -o /dev/null "https://${image#*/}" 2>/dev/null || true
+          # quay.io's v2 API, addressed by repository and tag.
+          registry=${image%%/*}
+          repository=${image#*/}
+          index=$(curl -sS -m 60 \
+            -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json' \
+            -D - -o /tmp/index.json \
+            "https://${registry}/v2/${repository}/manifests/${tag}" \
+            | grep -i '^docker-content-digest:' | tr -d '\r' | awk '{print $2}')
+          amd64=$(jq -r '.manifests[] | select(.platform.architecture=="amd64" and .platform.os=="linux") | .digest' /tmp/index.json)
+
+          test -n "$index" && test -n "$amd64"
+          echo "index=$index"  >> "$GITHUB_OUTPUT"
+          echo "amd64=$amd64"  >> "$GITHUB_OUTPUT"
+          echo "today=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Move the pin and re-render
+        run: |
+          set -euo pipefail
+          sed -i "s|^digest = \".*\"|digest = \"${{ steps.upstream.outputs.index }}\"|" model/images.toml
+          sed -i "s|^amd64_digest = \".*\"|amd64_digest = \"${{ steps.upstream.outputs.amd64 }}\"|" model/images.toml
+          sed -i "s|^resolved_on = \".*\"|resolved_on = \"${{ steps.upstream.outputs.today }}\"|" model/images.toml
+          # The Containerfile carries the pin too, and CI-01 asserts the two
+          # agree --- so the bump has to move both or its own gate stops it.
+          sed -i "s|@sha256:[0-9a-f]\{64\}|@${{ steps.upstream.outputs.index }}|" images/base/Containerfile
+          cargo run -q -p xtask -- render
+          cargo run -q -p xtask -- check-model --write
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      # The bump passes the full gate before it is proposed. A pull request that
+      # cannot pass its own repository's gate is a pull request that wastes the
+      # reviewer rather than the robot.
+      - run: just vv
+
+      - uses: peter-evans/create-pull-request@v6
+        with:
+          branch: bump/base-digest
+          title: "Bump the base image digest"
+          commit-message: "Bump the base image digest to ${{ steps.upstream.outputs.index }}"
+          body: |
+            The base is pinned by digest and never by the floating tag (§8.1).
+            This moves the pin to what `${{ github.repository }}`'s declared tag
+            currently resolves to.
+
+            - index: `${{ steps.upstream.outputs.index }}`
+            - amd64: `${{ steps.upstream.outputs.amd64 }}`
+            - resolved: `${{ steps.upstream.outputs.today }}`
+
+            CentOS Stream 10 was chosen for kernel stability, because a
+            measurement environment that moves underneath a longitudinal series
+            silently invalidates comparisons across it (§8.1). This bump moves
+            it deliberately, and T2 runs against the result.

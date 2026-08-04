@@ -1,0 +1,22 @@
+[package]
+name = "cluster-updater"
+description = "The rollout ordering predicate, drain, and apply (SPEC.md §13, §14)."
+# Shipped: this binary is in the base image on every node, and R5 therefore
+# binds. Every error a caller can see is one model/ids.toml sanctions.
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+cluster-health = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

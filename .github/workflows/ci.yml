@@ -1,33 +1,35 @@
-# The normative acceptance gate.
-#
-# `just vv` is the single gate. `honesty` is split out so a claim that has
-# drifted from its evidence reads differently from broken code.
+# T0 (SPEC.md §10.2): the render diff, the lints, the workspace suite, and the
+# container assertions. Everything checkable without booting anything.
 name: ci
-
 on:
-  push: { branches: [main] }
   pull_request:
-  workflow_dispatch:
+  push:
+    branches: [main]
 
-env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  vv:
-    name: just vv
+  gate:
+    # GitHub-hosted: static and cheap, and it keeps the cluster out of its own
+    # critical path (§9.4).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt, clippy }
-      - uses: extractions/setup-just@v2
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-deny
+      # `just vv` is the normative acceptance gate. Running the recipe rather
+      # than its steps means CI cannot drift from what a developer runs.
       - run: just vv
-
-  deny:
-    name: cargo-deny
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # R6 is not in `vv` because it needs a separate tool; it is not optional.
+      - run: just deny

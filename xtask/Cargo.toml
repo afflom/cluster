@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Repository gates: check-model, check-constants, audit-limits, audit-purity, audit-deferral, verify-oracles, validate."
+description = "Repository gates: check-model, check-render, audit-limits, audit-deferral, validate."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 repo-model = { workspace = true }
+cluster-model = { workspace = true }
 
 [lints]
 workspace = true

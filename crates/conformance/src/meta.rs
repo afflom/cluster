@@ -160,6 +160,34 @@ pub fn check_honesty(root: &Path, tests: &BTreeSet<String>) -> std::io::Result<H
         }
     }
 
+    // The class rule §19.2 anticipates for the first `CG-` row: a reclamation
+    // scenario must include a dirty-workspace case. Retention that is only
+    // tested on clean workspaces is retention that has never been tested against
+    // the failure that matters --- and that failure is not a crash, it is a
+    // system quietly deleting somebody's uncommitted work and never being
+    // trusted again.
+    //
+    // Armed by the register, not asserted outright: a repository with no `CG-`
+    // rows has no scenario to check, and one with `CG-` rows and no dirty case
+    // is the defect, in both.
+    for s in &suites.scenarios {
+        if !s.id.starts_with("CG-") {
+            continue;
+        }
+        let mentions_dirty = s
+            .steps
+            .iter()
+            .any(|step| step.to_lowercase().contains("dirty"));
+        if !mentions_dirty {
+            report.violations.push(format!(
+                "SPEC.md §19.2: scenario `{}` in {} discharges {}, a reclamation claim, but \
+                 no step mentions a dirty workspace. Retention tested only on clean \
+                 workspaces has never been tested against the failure that matters.",
+                s.statement, s.suite, s.id
+            ));
+        }
+    }
+
     // R2: an `open` claim must not be asserted as established, anywhere.
     let open_ids: Vec<&str> = model
         .ids

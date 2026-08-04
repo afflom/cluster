@@ -1,0 +1,121 @@
+# Promotion is deliberate and human-initiated; everything after it is not
+# (SPEC.md §9.3).
+#
+# An operator pushes a tag onto a commit whose T0, T1 and T2 are green. This
+# workflow signs the three digests built from that commit, copies each to
+# :stable, and publishes a Release whose body records them. The Release is the
+# operator's authorization and the human-readable record; the :stable digest
+# moving is the machine-readable event, and §13 is what consumes it.
+name: promote
+on:
+  push:
+    tags: ["promote/*"]
+
+# Serialised: two promotions racing would leave :stable pointing at whichever
+# `crane copy` finished last, which is not a decision anyone made.
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+  # Keyless cosign: GitHub OIDC, Fulcio, Rekor. No long-lived key to custody
+  # (§12.3).
+  id-token: write
+
+jobs:
+  promote:
+    # GitHub-hosted: the publish path never depends on the cluster (§9.4).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve the tag to its commit
+        id: source
+        run: echo "sha=$(git rev-list -n1 '${{ github.ref_name }}')" >> "$GITHUB_OUTPUT"
+
+      - uses: sigstore/cosign-installer@v3
+      - uses: imjasonh/setup-crane@v0.4
+      - uses: redhat-actions/podman-login@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sign each digest, then move :stable to it
+        id: publish
+        run: |
+          set -euo pipefail
+          sha='${{ steps.source.outputs.sha }}'
+          body="Promoted from ${sha}"
+          for node in n1 n2 n3; do
+            ref="ghcr.io/${{ github.repository }}/$node"
+            digest=$(crane digest "$ref:ci-$sha")
+            # Signed before it is copied. A digest that reaches :stable unsigned
+            # is one every node's policy would refuse to stage, which would be a
+            # cluster-wide halt rather than a caught mistake (§12.3).
+            cosign sign --yes "$ref@$digest"
+            crane copy "$ref@$digest" "$ref:stable"
+            body="${body}"$'\n'"$node: $digest"
+          done
+          {
+            echo 'body<<EOF'
+            echo "$body"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      # §12.1's root of trust. The signature policy that verifies every *later*
+      # image ships inside the image, so the first install cannot verify itself
+      # --- it is anchored by this checksum, published here and verified out of
+      # band by whoever mounts the ISO.
+      #
+      # Without this the chain has no beginning: a node's policy refuses an
+      # unsigned image, and the medium that installs the policy is unattested.
+      - name: Build the installer ISO and checksum it
+        id: iso
+        run: |
+          set -euo pipefail
+          mkdir -p iso
+          for node in n1 n2 n3; do
+            ref="ghcr.io/${{ github.repository }}/$node"
+            digest=$(crane digest "$ref:stable")
+            sudo podman run --rm --privileged \
+              --security-opt label=type:unconfined_t \
+              -v ./iso:/output \
+              -v ./bootstrap:/config:ro \
+              -v /var/lib/containers/storage:/var/lib/containers/storage \
+              quay.io/centos-bootc/bootc-image-builder:latest \
+              --type anaconda-iso \
+              --config /config/config.toml \
+              "$ref@$digest"
+            sudo mv iso/bootiso/install.iso "iso/$node.iso"
+          done
+          sudo chown -R "$USER" iso
+          ( cd iso && sha256sum ./*.iso > SHA256SUMS )
+          {
+            echo 'checksums<<EOF'
+            cat iso/SHA256SUMS
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            iso/*.iso
+            iso/SHA256SUMS
+          body: |
+            ${{ steps.publish.outputs.body }}
+
+            ## Installer checksums (§12.1)
+
+            This is the root of trust. §12.3's signature policy ships inside the
+            image, so a first install cannot verify itself; verify these out of
+            band before mounting the ISO.
+
+            ```
+            ${{ steps.iso.outputs.checksums }}
+            ```

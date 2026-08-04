@@ -1,0 +1,23 @@
+# n2 --- interactive compute (SPEC.md §8.4).
+#
+# Devcontainers and the VS Code Remote-SSH target. No CI runners: the interactive
+# node stays uncontended (§9.5).
+ARG BASE
+FROM ${BASE}
+
+RUN dnf -y install nfs-utils nodejs npm git rsync openssh-clients && dnf clean all
+RUN dnf -y install podman podman-docker && dnf clean all
+ENV DOCKER_HOST=unix:///run/podman/podman.sock
+
+# The Dev Containers CLI, which is what actually builds and starts a workspace.
+RUN npm install -g @devcontainers/cli
+
+COPY devcontainer-agent /usr/bin/devcontainer-agent
+RUN chmod 0755 /usr/bin/devcontainer-agent
+
+COPY generated/n2/containers-systemd/ /usr/share/containers/systemd/
+
+RUN systemctl enable podman.socket remote-fs.target \
+      var-lib-devcontainer\\x2dhome.mount
+
+RUN bootc container lint

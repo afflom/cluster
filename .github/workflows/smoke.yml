@@ -1,0 +1,21 @@
+# T3: the same suite against real hardware, after each promotion, plus the
+# firmware verification only real nodes can establish (SPEC.md §10.2, §21.2).
+name: smoke
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hardware:
+    # The only tier that can discharge a CH- claim. A simulated run cannot
+    # establish that VT-x is enabled in firmware, that a MAC belongs to the card
+    # the model says it does, or that a SATA device is mounted where §2.2
+    # requires --- and the collector refuses to hand it one (§19.2).
+    runs-on: [self-hosted, linux, x64, cluster, ci]
+    steps:
+      - uses: actions/checkout@v4
+      - run: just t3

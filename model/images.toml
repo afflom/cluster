@@ -1,0 +1,367 @@
+# model/images.toml --- variants, base digest, runtime, packages, units, kargs
+# (SPEC.md §8).
+#
+# The base is pinned by digest and never by the floating tag. A repository this
+# careful about digest-pinning downstream cannot float its upstream (§8.1); a
+# scheduled workflow opens a PR bumping it weekly, and the bump passes the full
+# gate like any other change.
+#
+# The container runtime is a row here rather than a bet in a Containerfile
+# (§8.2). Docker CE packages for EL10 may or may not exist at any given build,
+# so the build fails loudly when the declared runtime is unavailable rather than
+# silently substituting the other one.
+
+spec = "cluster/1"
+
+# The runtime a variant takes unless it says otherwise --- the default until EL10
+# Docker packages are confirmed to exist. Changing this line changes what every
+# variant builds against, and `CI-03` re-reads it.
+#
+# Declared here, above every table header, because a bare key after `[[runtime]]`
+# would belong to that runtime rather than to the document.
+default_runtime = "podman-compat"
+
+[base]
+image = "quay.io/centos-bootc/centos-bootc"
+# Recorded for provenance and for the weekly bump PR to diff against. Nothing
+# pulls it: `digest` below is what every Containerfile writes after `FROM`.
+tag = "stream10"
+# The multi-arch index, resolved from quay.io on the date below.
+digest = "sha256:2b7e3b1abf8db094d1efb083721dc0f72e6feeef2355fc16ea010d0266b2bb95"
+# The amd64 manifest inside that index. The fleet is uniform x86_64 (§2.1), so
+# the platform is a model fact too, and `CI-02` asserts the built image reports
+# it rather than trusting the builder's default.
+amd64_digest = "sha256:6673fbbd49b11314700b0e842ed75149a673eb9faf7ec4cc5882b0978c0d029c"
+architecture = "amd64"
+resolved_on = "2026-08-04"
+# CentOS Stream 10 over Fedora bootc for kernel stability: a measurement
+# environment that moves underneath a longitudinal series silently invalidates
+# comparisons across it (§8.1).
+reason = "kernel stability under a longitudinal measurement series"
+
+# ---------------------------------------------------------------------------
+# Signing and verification (§12.3).
+#
+# Nodes verify before staging. The policy rendered from this section ships in
+# every image, and it is the only thing standing between a node and an arbitrary
+# image: §13 applies whatever `:stable` points at, unattended, with no operator
+# present. An image signed by anything else does not stage --- including one
+# signed by a different workflow in this same repository, which is why the
+# identity is a workflow reference and not merely a repository.
+# ---------------------------------------------------------------------------
+
+[signing]
+# Keyless cosign: GitHub OIDC, Fulcio, Rekor. There is no long-lived key to
+# custody, which is the whole reason for choosing it.
+issuer = "https://token.actions.githubusercontent.com"
+repository = "afflom/cluster"
+workflow = ".github/workflows/promote.yml"
+ref = "refs/heads/main"
+transparency_log = "https://rekor.sigstore.dev"
+
+# ---------------------------------------------------------------------------
+# Where a node pulls from (§13.1, §14.2).
+#
+# The local registry first, then the fallbacks. Zot *will* be unreachable during
+# n1's own reboot --- by design --- and pulls continue over WAN rather than
+# failing, which is what makes §14.2 a stated window rather than an outage.
+#
+# The host is derived from the node that runs the registry, never written here:
+# duplicating a loopback is exactly the second source R1 forbids. The same rule
+# governs every address below, which is why they are written `{n1.loopback}` and
+# substituted at render time.
+# ---------------------------------------------------------------------------
+
+[registries]
+port = 5000
+fallbacks = ["ghcr.io", "docker.io"]
+
+# ---------------------------------------------------------------------------
+# Container runtime (§8.2). Two legal values; either passes `CI-02` and `CW-01`.
+# ---------------------------------------------------------------------------
+
+[[runtime]]
+id = "podman-compat"
+packages = ["podman", "podman-docker"]
+socket_unit = "podman.socket"
+docker_host = "unix:///run/podman/podman.sock"
+description = "podman with the Docker API shim and DOCKER_HOST set"
+
+[[runtime]]
+id = "docker"
+packages = ["docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin"]
+socket_unit = "docker.socket"
+docker_host = "unix:///var/run/docker.sock"
+description = "Docker CE from the official EL10 repository"
+
+# ---------------------------------------------------------------------------
+# Base image (§8.1). Everything every node has.
+# ---------------------------------------------------------------------------
+
+[base.content]
+packages = [
+  "openssh-server",
+  "chrony",
+  "nftables",
+  "greenboot",
+  "greenboot-default-health-checks",
+  "container-selinux",
+  "policycoreutils",
+  "policycoreutils-python-utils",
+  "tailscale",
+  "jq",
+  "iproute",
+  "ethtool",
+]
+
+# Built by this repository and copied in, not installed from a repository. They
+# are the two things every node must have before it can be trusted to update
+# itself unattended (§10.1, §13).
+binaries = ["cluster-health", "cluster-updater"]
+
+# `console=ttyS1,115200` matches the COM2/SOL redirection declared in
+# `model/cluster.toml`'s firmware table (§2.4).
+kargs = ["console=ttyS1,115200"]
+
+# Key-only SSH. A password-accepting sshd on a node that reboots unattended is
+# an invitation, and there is no operator present to notice.
+[base.sshd]
+password_authentication = false
+permit_root_login = "prohibit-password"
+kbd_interactive_authentication = false
+
+[base.selinux]
+mode = "enforcing"
+policy_type = "targeted"
+# Compiled at image build time and shipped in /usr/share/selinux/, loaded by a
+# oneshot unit ordered before workloads. Nothing compiles policy at runtime on a
+# read-only root (§8.3).
+module = "cluster"
+compile_at = "build"
+
+# node_exporter is a Quadlet rather than a package: EL10 has no packaged
+# exporter, and shipping the upstream container keeps the version a model fact
+# instead of whatever a repository happens to carry.
+[[base.quadlet]]
+name = "node-exporter"
+kind = "container"
+image = "quay.io/prometheus/node-exporter:v1.8.2"
+publish = ["9100:9100"]
+network = "host"
+description = "host metrics on the management plane (§18)"
+
+[[base.quadlet.mount]]
+source = "/"
+target = "/host"
+options = "ro,rslave"
+relabel = "z"
+
+# ---------------------------------------------------------------------------
+# n1 --- storage and CI (§8.4)
+# ---------------------------------------------------------------------------
+
+[[variant]]
+id = "n1"
+node = "n1"
+runtime = "podman-compat"
+packages = [
+  "lvm2",
+  "device-mapper-persistent-data",
+  "nfs-utils",
+  "restic",
+  "qemu-kvm",
+  "libvirt-daemon-kvm",
+  "edk2-ovmf",
+  "smartmontools",
+]
+# cluster-ctl is a native unit, not a Quadlet: §16.1 calls it "an axum service
+# on n1", the binary is already in this image, and wrapping a binary the image
+# ships in a container that has to be pulled from a registry the same node hosts
+# is a start-up ordering problem invented for nothing.
+services = [
+  "nfs-server.service",
+  "libvirtd.service",
+  "lvm2-monitor.service",
+  "cluster-ctl.service",
+]
+kargs = []
+
+[[variant.quadlet]]
+name = "zot"
+kind = "container"
+image = "ghcr.io/project-zot/zot-linux-amd64:v2.1.2"
+publish = ["{n1.loopback}:5000:5000"]
+description = "registry; mirrors ghcr.io/afflom/cluster/* and pull-through caches docker.io and ghcr.io (§5.4)"
+
+[[variant.quadlet.mount]]
+source = "/var/lib/zot"
+target = "/var/lib/registry"
+options = "rw"
+relabel = "Z"
+
+[[variant.quadlet.mount]]
+source = "/etc/zot/config.json"
+target = "/etc/zot/config.json"
+options = "ro"
+relabel = "z"
+
+[[variant.quadlet]]
+name = "garage"
+kind = "container"
+image = "docker.io/dxflrs/garage:v1.0.1"
+publish = ["{n1.loopback}:3900:3900", "{n1.loopback}:3903:3903"]
+description = "S3-compatible object store; the sccache backend (§5.4)"
+
+[[variant.quadlet.mount]]
+source = "/var/lib/garage/meta"
+target = "/var/lib/garage/meta"
+options = "rw"
+relabel = "Z"
+
+[[variant.quadlet.mount]]
+source = "/var/lib/garage/data"
+target = "/var/lib/garage/data"
+options = "rw"
+relabel = "Z"
+
+[[variant.quadlet]]
+name = "prometheus"
+kind = "container"
+image = "quay.io/prometheus/prometheus:v2.54.1"
+publish = ["{n1.loopback}:9090:9090"]
+description = "scrapes the mesh; retention accepted as lossy (§5.6, §18)"
+# Retention is command-line only, so it is passed rather than written into
+# prometheus.yml. The value comes from model/policy.toml: one number, one source.
+exec = [
+  "--config.file=/etc/prometheus/prometheus.yml",
+  "--storage.tsdb.path=/prometheus",
+  "--storage.tsdb.retention.time={policy.prometheus_retention_days}d",
+]
+
+[[variant.quadlet.mount]]
+source = "/var/lib/prometheus"
+target = "/prometheus"
+options = "rw"
+relabel = "Z"
+
+[[variant.quadlet.mount]]
+source = "/etc/prometheus"
+target = "/etc/prometheus"
+options = "ro"
+relabel = "z"
+
+[[variant.quadlet]]
+name = "grafana"
+kind = "container"
+image = "docker.io/grafana/grafana:11.2.0"
+publish = ["{n1.loopback}:3000:3000"]
+description = "dashboards (§18)"
+
+[[variant.quadlet.mount]]
+source = "/var/lib/grafana"
+target = "/var/lib/grafana"
+options = "rw"
+relabel = "Z"
+
+[[variant.quadlet.mount]]
+source = "/etc/grafana/provisioning"
+target = "/etc/grafana/provisioning"
+options = "ro"
+relabel = "z"
+
+[[variant.quadlet]]
+name = "alertmanager"
+kind = "container"
+image = "quay.io/prometheus/alertmanager:v0.27.0"
+publish = ["{n1.loopback}:9093:9093"]
+description = "delivers to a Tailscale-reachable webhook; no paging integration (§18)"
+
+[[variant.quadlet.mount]]
+source = "/var/lib/alertmanager"
+target = "/alertmanager"
+options = "rw"
+relabel = "Z"
+
+[[variant.quadlet.mount]]
+source = "/etc/alertmanager"
+target = "/etc/alertmanager"
+options = "ro"
+relabel = "z"
+
+# Two ephemeral CI runners. `--ephemeral` means a runner exits after one job,
+# which is what makes drain a matter of not re-registering rather than of
+# killing work (§9.5, §14.1).
+[[variant.runner]]
+name = "ci-1"
+labels = ["self-hosted", "linux", "x64", "cluster", "ci"]
+ephemeral = true
+
+[[variant.runner]]
+name = "ci-2"
+labels = ["self-hosted", "linux", "x64", "cluster", "ci"]
+ephemeral = true
+
+# ---------------------------------------------------------------------------
+# n2 --- interactive compute (§8.4)
+# ---------------------------------------------------------------------------
+
+[[variant]]
+id = "n2"
+node = "n2"
+runtime = "podman-compat"
+packages = ["nfs-utils", "nodejs", "npm", "git", "rsync", "openssh-clients"]
+
+# Every session this node starts gets the tunnel Feature (§11.1). It is added
+# with `devcontainer up --additional-features`, so `devcontainer.json` is never
+# modified --- §1 puts that file out of scope, and the tunnel is a property of
+# how this cluster runs containers rather than of any project.
+features = ["ghcr.io/afflom/cluster/features/tunnel:1"]
+# The agent is a native unit for the same reason cluster-ctl is: it drives
+# podman and the devcontainer CLI on this node's own filesystem, and a container
+# that has to reach both would need the whole host mounted into it.
+services = ["remote-fs.target", "devcontainer-agent.service"]
+kargs = []
+
+# NFS carries data only. Workspaces are on local disk because `overlay2` and
+# podman's `overlay` driver do not function on NFS (§11.2).
+[[variant.mount]]
+what = "{n1.loopback}:/export/devcontainers"
+where = "/var/lib/devcontainer-home"
+type = "nfs4"
+options = "hard,sec=sys,_netdev"
+
+# ---------------------------------------------------------------------------
+# n3 --- measurement (§8.4, §8.5)
+#
+# No NFS client, no Tailscale subnet routing, no migration receiver. NFS client
+# activity, RPC timers, and interrupt handling inject jitter into exactly the
+# quantity being measured (§2.3).
+# ---------------------------------------------------------------------------
+
+[[variant]]
+id = "n3"
+node = "n3"
+runtime = "podman-compat"
+packages = ["git", "rsync"]
+services = []
+kargs = [
+  "isolcpus=2,3",
+  "nohz_full=2,3",
+  "rcu_nocbs=2,3",
+  "nosmt",
+  "intel_idle.max_cstate=1",
+  "processor.max_cstate=1",
+]
+
+[variant.isolation]
+isolated_cpus = "2,3"
+governor = "performance"
+irq_affinity = "0,1"
+
+[[variant.runner]]
+name = "bench-1"
+labels = ["self-hosted", "linux", "x64", "cluster", "bench"]
+ephemeral = true
+# One measurement at a time, nothing else. Enforced by a systemd concurrency
+# lock rather than by convention (§9.5).
+concurrency = 1

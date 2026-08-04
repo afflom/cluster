@@ -1,0 +1,30 @@
+# n3 --- measurement (SPEC.md §8.4, §8.5).
+#
+# One measurement job at a time, nothing else. No NFS client, no Tailscale subnet
+# routing, no migration receiver: NFS client activity, RPC timers, and interrupt
+# handling inject jitter into exactly the quantity being measured (§2.3).
+#
+# What this file establishes is that the isolation kargs are present and that
+# /sys/devices/system/cpu/isolated reflects them. That the environment yields
+# stable measurements is neither constructible nor testable, and §21.1 records
+# why.
+ARG BASE
+FROM ${BASE}
+
+RUN dnf -y install git rsync && dnf clean all
+RUN dnf -y install podman podman-docker && dnf clean all
+ENV DOCKER_HOST=unix:///run/podman/podman.sock
+
+# The base's Quadlets --- node_exporter --- plus this variant's. Without this the
+# measurement node would render an exporter and ship nothing that runs it, and
+# §18's node-down alert would fire on a node that was perfectly healthy.
+COPY generated/n3/containers-systemd/ /usr/share/containers/systemd/
+COPY generated/n3/libexec/ /usr/libexec/cluster/
+RUN chmod 0755 /usr/libexec/cluster/*
+
+# The governor and IRQ affinity are set by a oneshot unit ordered before
+# workloads, because neither is a kernel argument and both must hold before the
+# first measurement runs (§8.5).
+RUN systemctl enable podman.socket cluster-isolation.service
+
+RUN bootc container lint

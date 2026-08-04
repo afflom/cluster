@@ -1,0 +1,280 @@
+# model/cluster.toml --- what a node is (SPEC.md §2, §3.1, §5.1, §16.2).
+#
+# Nodes, roles, interface MAC addresses, update positions, storage tiering, and
+# the logins permitted to drive the control plane. Every one of these is a model
+# fact under R1: nothing downstream reads a node's identity from the node.
+#
+# Hardware uniform across the fleet is declared once as a profile and referenced
+# by name, so a fleet-wide correction is one edit rather than three (§7.1).
+#
+# The MAC addresses are the addresses of the physical fleet. They are not
+# discovered and never inferred from an interface name: every rendered
+# `.network` file matches on `MACAddress=`, and `CB-01` fails at boot if a
+# declared address is absent (§3.1). Replacing a mainboard therefore changes
+# this file first and the hardware second --- §17.1 is the procedure.
+
+spec = "cluster/1"
+
+# The tailnet the control plane and off-LAN access are published on (§4.5, §16.2).
+tailnet = "afflom"
+
+# Who may drive the cluster (§16.2).
+#
+# Authorization is a login compared against this list. `afflom` is a *user*
+# account, not an organization, so there is no membership API to call --- no
+# `GET /orgs/afflom/members` exists. A second person needs either an
+# organization or a collaborator check against a named repository, and neither
+# is in scope. Stating the limit here is what keeps it from being foreclosed by
+# silence.
+#
+# These are GitHub logins, not email addresses: the identity is whatever
+# `GET /user` returns for the bearer token.
+authorized_logins = ["afflom"]
+
+# The GitHub App the browser authorizes against (§16.2).
+#
+# The client ID is **public by design** and is deliberately not in §12.2's table
+# of secrets. The device flow uses a public client ID with no client secret,
+# which is exactly what lets a static page start an authorization at all --- and
+# a table of secrets containing a non-secret teaches its reader to skim.
+#
+# A GitHub *App*, not an OAuth App: App user-to-server tokens expire in eight
+# hours and carry a refresh token, where an OAuth App token does not expire, and
+# a non-expiring token in browser storage is a permanent liability.
+[github_app]
+client_id = "Iv23liCLUSTERafflom00"
+# Identity only. It deliberately does not request `repo`: the UI takes a typed
+# repository reference, and the container clones with credentials that arrive
+# over the tunnel and die with the connection (§16.2).
+scopes = ["read:user"]
+device_code_url = "https://github.com/login/device/code"
+token_url = "https://github.com/login/oauth/access_token"
+user_url = "https://api.github.com/user"
+
+# ---------------------------------------------------------------------------
+# Hardware profile (§2.1)
+# ---------------------------------------------------------------------------
+
+[[profile]]
+id = "e300-8d"
+chassis = "Supermicro SYS-E300-8D"
+board = "X10SDV-4C-TLN2F"
+cpu = "Intel Xeon D-1518"
+cores = 4
+threads = 8
+base_mhz = 2200
+# Equal to `base_mhz` on this part, and that is the reason `n3` is usable as a
+# measurement host: a flat clock has no boost algorithm to introduce variance.
+max_mhz = 2200
+tdp_watts = 35
+# Bounds what any measurement taken on this fleet generalizes to (§2.1).
+avx512 = false
+memory_gb = 32
+memory_slots = 4
+memory_ceiling_gb = 128
+nic_10g = 2
+nic_1g = 2
+ipmi = true
+
+# ---------------------------------------------------------------------------
+# n1 --- storage and CI. Last to update, because it carries the machinery
+# needed to diagnose a bad one (§2.3).
+# ---------------------------------------------------------------------------
+
+[[node]]
+name = "n1"
+role = "storage-ci"
+profile = "e300-8d"
+update_position = 3
+loopback = "10.10.255.1"
+mgmt_address = "192.168.20.11/24"
+bmc_address = "192.168.30.11/24"
+# The storage node must not compete for inrush after an outage, and `n2` and
+# `n3` should find the registry and NFS already answering (§2.5).
+power_on_delay_s = 30
+
+[node.mac]
+mgmt = "0c:c4:7a:11:20:01"
+mesh_a = "0c:c4:7a:11:10:01"
+mesh_b = "0c:c4:7a:11:10:02"
+bmc = "0c:c4:7a:11:30:01"
+
+# §2.2: both SATA devices are internal and the SSD caches the HDD. The fallback
+# --- if the chassis will not take both --- is `m2-partition`, and that is the
+# whole of the change. Nothing downstream branches.
+[node.storage]
+cache_device = "sata-ssd"
+cache_partition_gib = 64
+volume_group = "vg_data"
+origin_lv = "lv_data"
+
+[[node.disk]]
+id = "m2"
+kind = "nvme"
+size_gb = 256
+purpose = "boot"
+
+[[node.disk]]
+id = "sata-ssd"
+kind = "ssd"
+size_gb = 256
+purpose = "cache"
+
+[[node.disk]]
+id = "sata-hdd"
+kind = "hdd"
+size_gb = 2000
+purpose = "data"
+
+# ---------------------------------------------------------------------------
+# n2 --- interactive compute. Second, between the cheapest failure and the
+# most expensive one.
+# ---------------------------------------------------------------------------
+
+[[node]]
+name = "n2"
+role = "compute"
+profile = "e300-8d"
+update_position = 2
+loopback = "10.10.255.2"
+mgmt_address = "192.168.20.12/24"
+bmc_address = "192.168.30.12/24"
+power_on_delay_s = 0
+
+[node.mac]
+mgmt = "0c:c4:7a:12:20:01"
+mesh_a = "0c:c4:7a:12:10:01"
+mesh_b = "0c:c4:7a:12:10:02"
+bmc = "0c:c4:7a:12:30:01"
+
+[node.storage]
+# `overlay2` and podman's `overlay` driver do not function on NFS, so the
+# container graph is local on every node and NFS carries data only (§11.2).
+container_graph_device = "sata-ssd"
+
+[[node.disk]]
+id = "m2"
+kind = "nvme"
+size_gb = 256
+purpose = "boot"
+
+[[node.disk]]
+id = "sata-ssd"
+kind = "ssd"
+size_gb = 256
+purpose = "container-graph"
+
+# ---------------------------------------------------------------------------
+# n3 --- measurement. First to update, because a failure there costs a
+# measurement window rather than the pipeline (§2.3).
+# ---------------------------------------------------------------------------
+
+[[node]]
+name = "n3"
+role = "bench"
+profile = "e300-8d"
+update_position = 1
+loopback = "10.10.255.3"
+mgmt_address = "192.168.20.13/24"
+bmc_address = "192.168.30.13/24"
+power_on_delay_s = 0
+
+[node.mac]
+mgmt = "0c:c4:7a:13:20:01"
+mesh_a = "0c:c4:7a:13:10:01"
+mesh_b = "0c:c4:7a:13:10:02"
+bmc = "0c:c4:7a:13:30:01"
+
+[node.storage]
+bench_device = "sata-ssd"
+
+[[node.disk]]
+id = "m2"
+kind = "nvme"
+size_gb = 256
+purpose = "boot"
+
+[[node.disk]]
+id = "sata-ssd"
+kind = "ssd"
+size_gb = 256
+purpose = "bench"
+
+# ---------------------------------------------------------------------------
+# Disk layout, identical on every node's M.2 (§5.1). bootc uses ostree
+# deployments rather than A/B partitions, so there is no slot arithmetic here:
+# current and rollback share `p3`.
+# ---------------------------------------------------------------------------
+
+[[partition]]
+id = "p1"
+size = "1GiB"
+format = "vfat"
+mount = "/boot/efi"
+
+[[partition]]
+id = "p2"
+size = "1GiB"
+format = "xfs"
+mount = "/boot"
+
+[[partition]]
+id = "p3"
+size = "remainder"
+format = "xfs"
+mount = "/"
+
+# ---------------------------------------------------------------------------
+# Firmware (§2.4). This pipeline cannot reach these; they are applied by hand at
+# bootstrap and re-verified by `CH-01` on every hardware smoke run. Declaring
+# them here is what makes "re-verified" mean something: the check reads the
+# model rather than an operator's memory.
+# ---------------------------------------------------------------------------
+
+[[firmware]]
+setting = "Intel VT-x"
+value = "Enabled"
+probe = "cpuinfo:vmx"
+reason = "n1 runs T2 guests; without it QEMU falls back to TCG"
+
+[[firmware]]
+setting = "Intel VT-d"
+value = "Enabled"
+probe = "cpuinfo:iommu"
+reason = "required for device assignment; harmless otherwise"
+
+[[firmware]]
+setting = "Hyper-Threading"
+value = "Enabled"
+probe = "cpuinfo:siblings"
+reason = "n3 disables SMT via nosmt, so isolation is expressed in one place"
+
+[[firmware]]
+setting = "C-States"
+value = "Enabled"
+probe = "ipmi:bios"
+reason = "n3 constrains them on the kernel cmdline; BIOS stays permissive so control lives in the model"
+
+[[firmware]]
+setting = "Restore on AC Power Loss"
+value = "Power On"
+probe = "ipmi:chassis-policy"
+reason = "headless cluster, no operator after an outage"
+
+[[firmware]]
+setting = "Boot order"
+value = "M.2 first, then virtual media"
+probe = "ipmi:bootparam"
+reason = "virtual media is the recovery path and must not be the default"
+
+[[firmware]]
+setting = "Console Redirection"
+value = "COM2/SOL, 115200 8N1"
+probe = "ipmi:sol"
+reason = "matches console=ttyS1,115200 in the image kargs"
+
+[[firmware]]
+setting = "Watchdog"
+value = "Enabled, reset action"
+probe = "ipmi:watchdog"
+reason = "a hung node recovers without an operator, which unattended update requires"

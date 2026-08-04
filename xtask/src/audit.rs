@@ -113,17 +113,25 @@ fn effective_lines(text: &str) -> Vec<(usize, &str)> {
     out
 }
 
-/// R5: no arbitrary limitation. Every bound is a property of the caller's
-/// chosen instantiation, never of the code.
+/// R5: no unsanctioned error. Every error a caller can see is one the model
+/// sanctions.
 ///
-/// Concretely: no shipped crate may return an error the model does not
-/// sanction. The absence of a class of error is checked here --- the absence of
-/// negative testing is only honest if there is nothing to test negatively.
+/// The allowlist is **read from `model/ids.toml`**, not written here. The
+/// template hard-coded three names, which made R5 a promise about a list nobody
+/// could change without editing a gate --- and a gate whose allowlist is edited
+/// to make it pass is a gate that has stopped enforcing anything. Reading it
+/// from the register means adding a sanctioned error is a model change that
+/// names the claim under which the error is a legitimate outcome, and
+/// `check-model` fails if that claim does not exist.
+///
+/// A shipped crate that wraps an `io::Error` into its own sanctioned type is
+/// doing exactly what R5 asks. One that lets `std::io::Result` reach a caller is
+/// not, and this is where that shows up.
 pub fn audit_limits(root: &Path) -> Result<(), Fail> {
+    let model = repo_model::Model::load(&root.join("model"))?;
     let sources = shipped_sources(root)?;
-    // The only error type a shipped crate may name, plus the declaration check at
-    // a declared boundary, which is not the operation failing.
-    let sanctioned = ["NotAProduct", "ObservedBound", "KappaError"];
+
+    let sanctioned: Vec<&str> = model.ids.error.iter().map(|e| e.name.as_str()).collect();
 
     let mut violations = Vec::new();
     for src in &sources {
@@ -139,17 +147,40 @@ pub fn audit_limits(root: &Path) -> Result<(), Fail> {
         }
     }
     if !violations.is_empty() {
+        let register = if sanctioned.is_empty() {
+            "model/ids.toml sanctions no error type at all".to_string()
+        } else {
+            format!("model/ids.toml sanctions {sanctioned:?}")
+        };
         return Err(format!(
-            "R5: every bound is derived from declared parameters and is a \
-             property of the caller's chosen instantiation. The only reportable \
-             condition is that the requested object does not exist, reported at view \
-             construction. A `Result` over anything else is a limitation the model does \
-             not sanction.\n\n{}",
+            "R5: every error a caller can see is one the model sanctions, and {register}. \
+             Wrap the condition in a sanctioned type, or add a row to model/ids.toml \
+             naming the claim under which it is a legitimate outcome.\n\n{}",
             violations.join("\n")
         )
         .into());
     }
-    println!("audit-limits: no shipped crate returns an unsanctioned error (R5)");
+
+    // Armed by the register rather than asserted outright, for the reason
+    // `AGENTS.md` gives: "there must be sanctioned errors" is false on an empty
+    // repository and true on a populated one, while "there are shipped crates
+    // and no sanctioned error type" is the defect in both.
+    let shipped = shipped(root)?;
+    if !shipped.is_empty() && sanctioned.is_empty() {
+        return Err(format!(
+            "R5: {shipped:?} ship, and model/ids.toml sanctions no error type. Either the \
+             crates report nothing a caller can see --- in which case say so with a row --- \
+             or the register is behind the code."
+        )
+        .into());
+    }
+
+    println!(
+        "audit-limits: {} shipped crate(s), {} sanctioned error type(s), no unsanctioned \
+         Result (R5)",
+        shipped.len(),
+        sanctioned.len()
+    );
     Ok(())
 }
 

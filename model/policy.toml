@@ -1,0 +1,277 @@
+# model/policy.toml --- every tunable that governs unattended behaviour
+# (SPEC.md §7.1).
+#
+# These are the numbers most likely to be tuned in anger at 2am, and they belong
+# in the model rather than scattered through unit files. The updater and GC
+# timer units and their environment files are rendered from here (§7.2), so a
+# change to a threshold is a change to one line and a re-render --- never a
+# change to a unit on a node.
+#
+# Nothing here is a claim. The claims about what these numbers *cause* live in
+# `model/ids.toml`; this file is only the values.
+
+spec = "cluster/1"
+
+# ---------------------------------------------------------------------------
+# Rollout (§13)
+# ---------------------------------------------------------------------------
+
+[rollout]
+# Nodes have no inbound reachability from GitHub, so there is no webhook.
+# Polling adds no attack surface, and the registry is polled rather than the
+# Releases API because the registry is what the node would actually pull (§13.1).
+poll_interval_s = 600
+# Jitter is what makes a simultaneous stale read unlikely rather than merely
+# improbable in theory (§13.2).
+poll_jitter_max_s = 120
+# The ordering predicate is a pure function of observable state, so it is cheap
+# to re-run --- and re-running it just before committing is what closes the
+# window a stale peer read would otherwise open (§13.2).
+recheck_before_apply_s = 30
+# How long a peer's /health may be stale before the predicate treats it as
+# unknown, which is not the same as unhealthy: unknown halts, it does not
+# proceed (§13.5).
+peer_health_timeout_s = 5
+peer_health_port = 9101
+# Registry order: local Zot first, GHCR on failure --- which it is, by design,
+# during n1's own reboot (§5.4, §13.1).
+registries = ["10.10.255.1:5000", "ghcr.io"]
+image_repository = "ghcr.io/afflom/cluster"
+stable_tag = "stable"
+
+[greenboot]
+# The boot is declared successful only if `cluster-health` passes within this
+# deadline; on failure greenboot rolls back to the previous ostree deployment
+# and the node reboots into it (§13.3).
+deadline_s = 600
+check_path = "/usr/lib/greenboot/check/required.d/50-cluster-health.sh"
+# A bad image costs one reboot cycle on one node rather than a cluster. Beyond
+# this count greenboot stops retrying and the previous deployment stands.
+max_boot_attempts = 3
+
+# ---------------------------------------------------------------------------
+# Drain budgets (§14.4)
+#
+# A budget is never met by force. Exceeding one halts the rollout and asks for a
+# human, because the alternative --- killing a four-hour benchmark to install a
+# patch release --- is worse than staying on the old image.
+# ---------------------------------------------------------------------------
+
+[[drain_budget]]
+class = "bench-job"
+budget_s = 14400
+on_exceed = "halt"
+comment = "never kill a measurement"
+
+[[drain_budget]]
+class = "ci-job"
+budget_s = 3600
+on_exceed = "halt"
+
+[[drain_budget]]
+class = "devcontainer-migration"
+budget_s = 600
+total_budget_s = 1800
+on_exceed = "stop-with-notice"
+comment = "the session survives; the process does not"
+
+[[drain_budget]]
+class = "total"
+budget_s = 21600
+on_exceed = "halt"
+
+[drain]
+# n1 has 4 cores and 32 GB and is already running the storage services and two
+# CI runners. Beyond this cap the excess is stopped with notice rather than
+# migrated, and T2 asserts the cap is enforced rather than exceeded silently
+# (§14.3).
+migration_memory_cap_gib = 12
+migration_target = "n1"
+# Nothing migrates to n3, ever. Receiving work would void the isolation
+# guarantee it exists to provide (§2.3, §14.1).
+never_receives = ["n3"]
+container_stop_grace_s = 30
+
+# ---------------------------------------------------------------------------
+# Reclamation (§15.3)
+#
+# Idle is measured from `last_attached_at`. The dirty exemption is the point of
+# the whole policy: reclaiming resources from an abandoned container is
+# housekeeping; deleting someone's uncommitted work because a timer expired is a
+# betrayal, and a system that does it once is never trusted again.
+# ---------------------------------------------------------------------------
+
+[reclaim]
+notify_after_days = 14
+archive_after_days = 30
+purge_after_days = 90
+# A dirty workspace is held indefinitely and listed in the UI as requiring
+# acknowledgement. The cost is a few gigabytes on a 2 TB disk.
+purge_dirty = false
+schedule = "daily"
+# Reclamation never runs during a rollout: a session archived because it was
+# idle must not be confused with one stopped because its host was updating
+# (§15.4).
+suspend_during_rollout = true
+snapshot_tool = "restic"
+snapshot_repository = "/var/lib/restic/devcontainers"
+
+# ---------------------------------------------------------------------------
+# Garbage collection and retention (§5.5)
+# ---------------------------------------------------------------------------
+
+[gc]
+schedule = "weekly"
+container_image_max_age_h = 168
+registry_untagged_max_age_days = 30
+journald_max_use = "2G"
+prometheus_retention_days = 30
+ostree_deployments_retained = 2
+# The only irreplaceable artifact the cluster produces, and it is small (§5.6).
+measurement_output_pruned = false
+
+# ---------------------------------------------------------------------------
+# Alerting (§18)
+#
+# Alertmanager delivers to a Tailscale-reachable webhook. There is no paging
+# integration; this is a three-node lab cluster and an alert that wakes someone
+# is worse than a dashboard they check.
+# ---------------------------------------------------------------------------
+
+[[alert]]
+id = "node-down"
+condition = "scrape failure"
+for_s = 300
+severity = "critical"
+
+[[alert]]
+id = "failed-units"
+condition = "node_systemd_unit_state{state=\"failed\"} > 0"
+for_s = 300
+severity = "warning"
+
+[[alert]]
+id = "digest-drift"
+condition = "booted digest != current :stable"
+for_s = 86400
+severity = "warning"
+
+[[alert]]
+id = "rollout-stalled"
+condition = "rollout state unchanged with a target pending"
+for_s = 21600
+severity = "critical"
+
+[[alert]]
+id = "drain-budget-exceeded"
+condition = "any drain budget breached"
+for_s = 0
+severity = "critical"
+
+[[alert]]
+id = "digest-quarantined"
+condition = "any node posted a quarantine"
+for_s = 0
+severity = "critical"
+
+[[alert]]
+id = "split-version"
+condition = "nodes on differing digests"
+for_s = 7200
+severity = "warning"
+
+[[alert]]
+id = "root-writable"
+condition = "/usr is not read-only"
+for_s = 0
+severity = "critical"
+
+[[alert]]
+id = "cache-pressure"
+condition = "dm-cache occupancy > 90%"
+for_s = 900
+severity = "warning"
+
+[[alert]]
+id = "disk-health"
+condition = "SMART failure"
+for_s = 0
+severity = "critical"
+
+[[alert]]
+id = "clock"
+condition = "chrony unsynchronised or offset > 100ms"
+for_s = 600
+severity = "warning"
+
+[[alert]]
+id = "bench-contention"
+condition = "a process on n3's isolated CPUs that is not the measurement job"
+for_s = 60
+severity = "warning"
+
+[[alert]]
+id = "reclaim-volume"
+condition = "more than 5 sessions archived in one run"
+for_s = 0
+severity = "warning"
+
+[[alert]]
+id = "dirty-archives-held"
+condition = "count of held dirty archives"
+for_s = 0
+severity = "info"
+
+# ---------------------------------------------------------------------------
+# Control-plane authorization (§16.2)
+# ---------------------------------------------------------------------------
+
+[auth]
+# How long a validated bearer token's login is cached before `GET /user` is
+# called again. Revocation lag is bounded by this, and the call volume at this
+# TTL is nowhere near a rate limit --- but it is a real window, and shortening it
+# costs a round trip to api.github.com on every request instead of every five
+# minutes.
+token_cache_ttl_s = 300
+# Requests to api.github.com give up after this. A control plane that blocked on
+# a slow validation would make an unreachable GitHub look like an unreachable
+# n1, which §16.3's disconnected state already cannot distinguish enough things.
+validation_timeout_s = 10
+# The origin the Pages copy is served from. CORS is exact-origin rather than a
+# wildcard: the API answers a management surface, and `*` would let any page
+# anybody visits drive this cluster with a token the browser already holds.
+allowed_origin = "https://afflom.github.io"
+
+# ---------------------------------------------------------------------------
+# The devcontainer tunnel (§11.1)
+# ---------------------------------------------------------------------------
+
+[tunnel]
+# Devcontainers have no init by default, so a `code tunnel` started from
+# postStartCommand has nothing to restart it if it dies mid-session. The Feature
+# installs a supervisor loop; these are its backoff bounds.
+#
+# Backoff rather than a tight loop: a tunnel failing because the token expired
+# would otherwise spin against GitHub until something rate-limited it.
+restart_backoff_initial_s = 2
+restart_backoff_max_s = 60
+# The name a session's tunnel takes, and therefore the URL it is addressed by.
+# Host-independent on purpose: the process dies with the container on one node
+# and re-registers on another under the same name, so the URL survives a
+# migration (§14.3).
+name_prefix = "dc-"
+url_template = "https://vscode.dev/tunnel/{name}/{folder}"
+# Forwarded ports are private unless somebody says otherwise. A development
+# server bound inside a container is not a thing to publish by accident (§11.1).
+default_port_visibility = "private"
+
+# ---------------------------------------------------------------------------
+# The health predicate's own thresholds (§10.1)
+# ---------------------------------------------------------------------------
+
+[health]
+port = 9101
+# `ping -M do -s 8972` is 9000 minus 20 bytes of IP header and 8 of ICMP, so it
+# fails if anything on the path is not carrying jumbo frames (§10.1).
+mesh_mtu_probe_bytes = 8972
+chrony_max_offset_ms = 100

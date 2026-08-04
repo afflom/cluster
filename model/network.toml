@@ -1,0 +1,170 @@
+# model/network.toml --- planes, links, routes, firewall (SPEC.md §3.2, §4).
+#
+# The route table is *derived* from this file and never written (§4.2). A
+# triangle with only direct routes is not resilient: one failed link partitions
+# two nodes that can physically reach each other through the third. So each node
+# holds two routes to each peer loopback --- direct at metric 100, transit at
+# metric 200 --- and `systemd-networkd` withdraws the direct one on carrier
+# loss, which is why failover needs no daemon.
+#
+# The renderer computes the transit route rather than reading it from here. A
+# transit hop written by hand is a second source for a fact the topology already
+# determines, which is what R1 forbids.
+
+spec = "cluster/1"
+
+# The prefix the management plane's SSH and node_exporter ports are opened to
+# (§4.4). Nothing outside it reaches a node except over Tailscale.
+lan_prefix = "192.168.20.0/24"
+
+# ---------------------------------------------------------------------------
+# Planes (§3.2)
+# ---------------------------------------------------------------------------
+
+[[plane]]
+id = "mgmt"
+interfaces = ["mgmt"]
+mtu = 1500
+# The only plane with a default route. Nodes need outbound WAN to pull from
+# GHCR when Zot is unreachable --- which it is, by design, during n1's own
+# reboot (§14.2). The mesh has no gateway and must not acquire one.
+gateway = "192.168.20.1"
+# §4.3 declares no *cluster* DNS: three nodes with static addresses do not
+# justify a resolver. This is the upstream resolver for everything that is not
+# a cluster name, and /etc/hosts still answers first.
+dns = ["192.168.20.1"]
+description = "LAN, SSH, Tailscale. One 1GbE port to an 8-port switch."
+
+[[plane]]
+id = "mesh"
+interfaces = ["mesh_a", "mesh_b"]
+mtu = 9000
+description = "Node-to-node only. Direct-attached 10GBase-T, no switch."
+
+[[plane]]
+id = "bmc"
+interfaces = ["bmc"]
+mtu = 1500
+# X10-generation BMCs have a poor CVE history and are the one component this
+# pipeline cannot update. Isolation is not optional.
+description = "Isolated VLAN. Never routed to WAN."
+
+# The second 1GbE port is deliberately unconfigured --- a spare for physical
+# fault diagnosis, and declaring it would render a `.network` file that claims
+# an address the port does not have.
+
+# ---------------------------------------------------------------------------
+# Topology (§4.1). `n <= 3` is structural: the mesh needs one 10 GbE port per
+# peer and each node has two. A fourth node needs a switch and a different
+# `kind` here (§1.1).
+# ---------------------------------------------------------------------------
+
+[topology]
+kind = "direct-triangle"
+max_nodes = 3
+
+# /31 point-to-point per RFC 3021: exactly two hosts, no network or broadcast
+# address. `a` takes the even address, `b` the odd one.
+[[link]]
+id = "l12"
+prefix = "10.10.0.0/31"
+a = "n1"
+b = "n2"
+a_interface = "mesh_a"
+b_interface = "mesh_a"
+
+[[link]]
+id = "l13"
+prefix = "10.10.0.2/31"
+a = "n1"
+b = "n3"
+a_interface = "mesh_b"
+b_interface = "mesh_a"
+
+[[link]]
+id = "l23"
+prefix = "10.10.0.4/31"
+a = "n2"
+b = "n3"
+a_interface = "mesh_b"
+b_interface = "mesh_b"
+
+[routing]
+# On every node, so a transit route has something to transit.
+ip_forward = true
+direct_metric = 100
+transit_metric = 200
+
+# ---------------------------------------------------------------------------
+# Firewall (§4.4). Default drop on input; every accept below is a declared one.
+#
+# The mesh is trusted in full because it is a physically isolated L2 with
+# exactly two endpoints per segment. That trust is a property of the topology
+# above, which is why §1.1's ceiling matters: a switched mesh would invalidate
+# it.
+# ---------------------------------------------------------------------------
+
+[firewall]
+input_policy = "drop"
+forward_policy = "drop"
+output_policy = "accept"
+
+[[firewall.rule]]
+plane = "mgmt"
+protocol = "tcp"
+port = 22
+source = "lan"
+comment = "SSH from the LAN"
+
+[[firewall.rule]]
+plane = "mgmt"
+protocol = "tcp"
+port = 9100
+source = "lan"
+comment = "node_exporter scrape"
+
+[[firewall.rule]]
+plane = "mgmt"
+protocol = "icmp"
+port = 0
+source = "lan"
+comment = "echo request"
+
+[[firewall.rule]]
+plane = "tailscale"
+protocol = "tcp"
+port = 22
+source = "tailnet"
+comment = "SSH off-LAN"
+
+[[firewall.rule]]
+plane = "tailscale"
+protocol = "tcp"
+port = 443
+source = "tailnet"
+nodes = ["n1"]
+comment = "cluster-ctl, published by tailscale serve"
+
+[[firewall.rule]]
+plane = "mesh"
+protocol = "any"
+port = 0
+source = "mesh"
+comment = "the mesh is a closed segment; all traffic between link and loopback addresses"
+
+[[firewall.rule]]
+plane = "lo"
+protocol = "any"
+port = 0
+source = "any"
+comment = "loopback"
+
+# ---------------------------------------------------------------------------
+# Name resolution (§4.3). No DNS service: three nodes with static addresses do
+# not justify a resolver, and a hosts file has no failure mode of its own. The
+# entries are derived from `model/cluster.toml`; only the suffixes are declared.
+# ---------------------------------------------------------------------------
+
+[hosts]
+mesh_suffix = "mesh"
+mgmt_suffix = "mgmt"

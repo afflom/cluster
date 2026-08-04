@@ -15,9 +15,1008 @@
 # state: a capability that is not built does not get a row, and every row in this
 # file is built.
 #
-# The register is empty. This repository has no claims yet; adding one starts
-# with a row here, in the order `AGENTS.md` sets out.
+# The classes are declared in `SPEC.md` §19.2. This file holds the rows; the
+# statements are the register's words and the scenarios copy them.
 
-spec = "template/1"
+spec = "cluster/1"
 
-id = []
+# ---------------------------------------------------------------------------
+# CM- --- Model. The register is internally consistent.
+#
+# CM-01 .. CM-03 are the template's own gates. They had no rows there because
+# the register was empty and no ID's prefix was `CM`, so nothing looked for
+# them; adding CM-04 made `CM` a known prefix and the meta-gate found the gap
+# immediately --- which is the anti-vacuity design working, a little late.
+#
+# CM-04 is this repository's: a register-consistency property, because "a
+# hardware claim cannot be discharged by a simulated run" is a statement about
+# what the register permits rather than about any node.
+# ---------------------------------------------------------------------------
+
+[[id]]
+id = "CM-01"
+level = "build"
+suite = "model"
+tier = "T0"
+statement = """
+The model is self-consistent, every file under model/ carries the schema tag
+this build understands, and CONFORMANCE.md equals what the register renders.
+"""
+
+[[id]]
+id = "CM-02"
+level = "build"
+suite = "model"
+tier = "T0"
+statement = """
+Every registered ID has a scenario and a test whose name ends in it, every
+scenario and every test names a registered ID, no scenario has a pending step,
+and the meta-gate itself can be made to fail.
+"""
+
+[[id]]
+id = "CM-03"
+level = "build"
+suite = "model"
+tier = "T0"
+statement = """
+Every some-true claim cites an authority that exists, with a citation and either
+a checksum over a committed artifact or a stated reason there is none.
+"""
+
+[[id]]
+id = "CM-04"
+level = "build"
+suite = "model"
+tier = "T0"
+statement = """
+Every registered claim is collected by exactly one validation tier, and no
+simulated tier collects a hardware claim, so a claim about a physical machine
+can never be discharged by a guest.
+"""
+
+# ---------------------------------------------------------------------------
+# CD- --- Definition. The model renders the declared artifacts (SPEC.md §7.2).
+#
+# This is R1 applied to infrastructure rather than to documentation. Each row
+# below is checked by `cargo xtask check-render`, which reads the committed
+# `generated/` tree and the register together: an artifact nothing asserts about
+# and a claim that touches no artifact both fail.
+# ---------------------------------------------------------------------------
+
+[[id]]
+id = "CD-01"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+Every rendered network unit for a physical interface matches its card by MAC
+address rather than by kernel name, and every MAC the model declares appears in
+exactly one unit.
+"""
+
+[[id]]
+id = "CD-02"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+Every node renders a direct route to each peer loopback at the declared metric
+and a transit route to it, at the higher metric, via the remaining peer.
+"""
+
+[[id]]
+id = "CD-03"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+The rendered firewall drops input by default, accepts only the flows the model
+declares, and forwards only between declared mesh addresses.
+"""
+
+[[id]]
+id = "CD-04"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+The rendered hosts file resolves every node's mesh name and management name to
+the addresses the model declares, and adds no name the model does not.
+"""
+
+[[id]]
+id = "CD-05"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+Every rendered Quadlet volume mount carries the SELinux relabel flag its model
+row declares.
+"""
+
+[[id]]
+id = "CD-06"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+The rendered kernel arguments carry the base set on every node and the declared
+isolation set on the measurement node alone.
+"""
+
+[[id]]
+id = "CD-07"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+The rendered kickstart partitions the boot device as the model declares and
+contains no secret value, only the named placeholders the installer substitutes.
+"""
+
+[[id]]
+id = "CD-08"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+The rendered updater, health, garbage-collection and reclamation units carry the
+intervals, deadlines and budgets model/policy.toml declares, and the updater's
+environment carries this node's rollout position and every peer's health
+endpoint.
+"""
+
+[[id]]
+id = "CD-09"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+The committed generated tree equals what the model renders, contains no file the
+model does not render, and every file in it names a registered definition claim
+in its header.
+"""
+
+[[id]]
+id = "CD-11"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+The rendered container signature policy and registry configuration carry the
+issuer, identity, mirrors and fallbacks the model declares, and every address in
+a rendered artifact is substituted from the node table rather than written twice.
+"""
+
+[[id]]
+id = "CD-12"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+Every rendered artifact is copied into an image by some build, every executable a
+rendered unit invokes is produced by a build or a declared package, every
+container image the model names in this repository's namespace has a
+Containerfile, every configuration a unit mounts read-only is rendered, and every
+control-plane endpoint any component calls is a route it serves.
+"""
+
+[[id]]
+id = "CD-13"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+Every alert model/policy.toml declares renders as a rule carrying its condition,
+its duration and its severity, and no declared alert renders to nothing.
+"""
+
+[[id]]
+id = "CD-14"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+The SSH daemon policy, the SELinux mode and type, and greenboot's deadline and
+attempt count are rendered from the model rather than declared a second time by
+an image build.
+"""
+
+[[id]]
+id = "CD-15"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+The control plane is published on the tailnet by a rendered unit, and the tailnet
+access policy is rendered from the model's authorized logins and management
+prefix, advertising no mesh address.
+"""
+
+[[id]]
+id = "CD-10"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+The rendered client SSH configuration carries a devcontainer alias that resolves
+a session's current host from the control plane and falls back to the last known
+host when the control plane is unreachable.
+"""
+
+# ---------------------------------------------------------------------------
+# CI- --- Image. Properties of the built container, before boot (SPEC.md §8).
+#
+# Everything checkable by reading rather than booting. A Containerfile has to
+# agree with model/images.toml about the base digest, the runtime, the packages
+# and whose rendered tree it carries, and discovering a drifted one in T2 costs
+# thirty-five minutes and three guests.
+# ---------------------------------------------------------------------------
+
+[[id]]
+id = "CI-01"
+level = "build"
+suite = "image"
+tier = "T0"
+statement = """
+Every Containerfile names its upstream base by the digest model/images.toml
+declares, exactly one does so, and none names a floating tag.
+"""
+
+[[id]]
+id = "CI-05"
+level = "build"
+suite = "image"
+tier = "T0"
+statement = """
+The base pin records both the index digest and the distinct manifest digest for
+the declared architecture, the build targets that platform explicitly, and a
+scheduled workflow moves the pin, measures its staleness from the recorded date,
+passes the full gate, and proposes rather than commits.
+"""
+
+[[id]]
+id = "CI-02"
+level = "build"
+suite = "image"
+tier = "T0"
+statement = """
+Each variant installs the packages of the runtime it declares, sets DOCKER_HOST
+to that runtime's socket, installs no package distinctive of the other runtime,
+and installs every package the model declares for it.
+"""
+
+[[id]]
+id = "CI-03"
+level = "build"
+suite = "image"
+tier = "T0"
+statement = """
+Each variant copies in the rendered tree of the node it is built for and no
+other node's, and the base takes its tree from a build argument because the
+rendered network configuration is per node.
+"""
+
+[[id]]
+id = "CI-04"
+level = "build"
+suite = "image"
+tier = "T0"
+statement = """
+Every image build runs the bootc container lint, so an image that is not a valid
+bootc host fails before a tier boots it.
+"""
+
+# ---------------------------------------------------------------------------
+# CL- --- Lifecycle. Signature policy, promotion, provenance (SPEC.md §9, §12.3).
+# ---------------------------------------------------------------------------
+
+[[id]]
+id = "CL-01"
+level = "build"
+suite = "lifecycle"
+tier = "T0"
+statement = """
+The rendered signature policy rejects by default and admits only a sigstore
+signature carrying the declared issuer and a certificate identity naming this
+repository's promote workflow, so an image signed by another workflow in the
+same repository does not stage.
+"""
+
+[[id]]
+id = "CL-05"
+level = "build"
+suite = "lifecycle"
+tier = "T0"
+statement = """
+The promotion workflow builds an installer from the digest it promoted, using
+this repository's bootstrap configuration, and publishes the installer and its
+SHA-256 as release artifacts --- the anchor a first install has, since the
+signature policy that verifies every later image ships inside the image.
+"""
+
+[[id]]
+id = "CL-02"
+level = "build"
+suite = "lifecycle"
+tier = "T0"
+statement = """
+Every registry prefix a node pulls carries a mirror on the local registry, and
+every fallback the model declares is rendered, so a pull continues over WAN when
+the local registry is unreachable.
+"""
+
+[[id]]
+id = "CL-03"
+level = "build"
+suite = "lifecycle"
+tier = "T0"
+statement = """
+The build captures each image digest as a workflow output, promotion resolves
+its tag to a commit and copies that digest without rebuilding, signing precedes
+the copy to the stable tag, and promotions are serialised.
+"""
+
+[[id]]
+id = "CL-04"
+level = "build"
+suite = "lifecycle"
+tier = "T2"
+statement = """
+An image in this repository's own namespace whose signature the shipped policy
+does not admit fails to stage, and the node is left running what it booted.
+"""
+
+# ---------------------------------------------------------------------------
+# CH- --- Hardware. What only real nodes can establish (SPEC.md §21.2).
+#
+# Every row here is tier T3, and check-model refuses any other value: a hardware
+# claim discharged by a QEMU guest would be a false statement about a physical
+# machine. cluster-harness enforces the same exclusion when collecting, so the
+# rule holds even if the register were somehow wrong.
+# ---------------------------------------------------------------------------
+
+[[id]]
+id = "CH-01"
+level = "build"
+suite = "hardware"
+tier = "T3"
+statement = """
+Every firmware setting the model declares is observed to hold on every node,
+read through the probe the model names for it.
+"""
+
+[[id]]
+id = "CH-05"
+level = "build"
+suite = "hardware"
+tier = "T3"
+statement = """
+Every node is the hardware its profile declares: the core count, the vector
+extensions, the maximum clock, the installed memory and slot count, and at least
+as many interfaces as the declared ports.
+"""
+
+[[id]]
+id = "CH-06"
+level = "build"
+suite = "hardware"
+tier = "T3"
+statement = """
+Every node's management controller answers out of band and reports the declared
+restore-on-power-loss behaviour, and only the storage node carries a power-on
+delay.
+"""
+
+[[id]]
+id = "CH-02"
+level = "build"
+suite = "hardware"
+tier = "T3"
+statement = """
+Every interface address the model declares is present on its node and carries
+the address the model gives that role, so a swapped cable or a replaced
+mainboard fails a gate rather than producing a silently mis-wired mesh.
+"""
+
+[[id]]
+id = "CH-03"
+level = "build"
+suite = "hardware"
+tier = "T3"
+statement = """
+Every node has exactly the storage devices the model declares, each of the
+declared rotational kind, and every declared partition is mounted.
+"""
+
+[[id]]
+id = "CH-04"
+level = "build"
+suite = "hardware"
+tier = "T3"
+statement = """
+After a promotion every real node passes the health predicate and the fleet is
+on one digest.
+"""
+
+# ---------------------------------------------------------------------------
+# CB- --- Boot. Properties of a single booted node (SPEC.md §10.1, §8.3).
+#
+# CB-01 is the predicate itself, and it is discharged statically: `evaluate` is
+# a pure function from observations to a report, so it can be exercised against
+# its oracle in-process rather than only inside a guest. That matters because
+# the predicate is what greenboot uses to decide whether an unattended reboot
+# stands or rolls back, and a decision procedure that can only be exercised by
+# booting a machine is one that gets exercised rarely.
+#
+# The claims about a node that has actually booted are discharged by the guest
+# tiers and carry T1 or T2.
+# ---------------------------------------------------------------------------
+
+[[id]]
+id = "CB-01"
+level = "build"
+suite = "boot"
+tier = "T0"
+statement = """
+The health predicate reports healthy exactly when all eight declared checks
+hold, each check can fail independently of the others, and a probe that cannot
+be executed is reported as an unknown rather than as a failed check.
+"""
+
+[[id]]
+id = "CB-02"
+level = "build"
+suite = "boot"
+tier = "T1"
+statement = """
+A node booted from a candidate image passes the health predicate, and every
+declared check is evaluated rather than merely declared.
+"""
+
+[[id]]
+id = "CB-03"
+level = "build"
+suite = "boot"
+tier = "T1"
+statement = """
+SELinux is enforcing on a booted node and the audit log holds no access-vector
+denial once the boot has settled.
+"""
+
+[[id]]
+id = "CB-04"
+level = "build"
+suite = "boot"
+tier = "T1"
+statement = """
+A booted node refuses a write to the read-only system tree and accepts one to
+the writable state tree.
+"""
+
+[[id]]
+id = "CB-05"
+level = "build"
+suite = "boot"
+tier = "T1"
+statement = """
+The runtime each variant declares is active on a booted node and its socket
+answers a Docker API version request.
+"""
+
+[[id]]
+id = "CB-06"
+level = "build"
+suite = "boot"
+tier = "T1"
+statement = """
+On the measurement node the kernel's isolated CPU set is the set the model
+declares, simultaneous multithreading is off, and the scaling governor is the
+declared one.
+"""
+
+# ---------------------------------------------------------------------------
+# CN- --- Network. Mesh behaviour and failover (SPEC.md §4).
+# ---------------------------------------------------------------------------
+
+[[id]]
+id = "CN-01"
+level = "build"
+suite = "network"
+tier = "T2"
+statement = """
+Every node reaches every peer loopback with a datagram of the full mesh payload
+size and the do-not-fragment flag set, so a path that will not carry jumbo
+frames fails rather than answering a smaller probe.
+"""
+
+[[id]]
+id = "CN-02"
+level = "build"
+suite = "network"
+tier = "T2"
+statement = """
+When one mesh link loses carrier, the nodes it joined remain reachable by the
+transit route through the remaining peer, and the path taken changes.
+"""
+
+[[id]]
+id = "CN-03"
+level = "build"
+suite = "network"
+tier = "T2"
+statement = """
+The loaded packet filter on every node defaults to drop on input and carries
+every flow the model declares for that node.
+"""
+
+# ---------------------------------------------------------------------------
+# CS- --- Storage. Registry, object store, NFS, cache (SPEC.md §5).
+# ---------------------------------------------------------------------------
+
+[[id]]
+id = "CS-01"
+level = "build"
+suite = "storage"
+tier = "T2"
+statement = """
+A node that does not host the registry pulls its own image from it across the
+mesh.
+"""
+
+[[id]]
+id = "CS-04"
+level = "build"
+suite = "storage"
+tier = "T0"
+statement = """
+The rendered registry configuration binds the storage node's mesh loopback,
+mirrors this repository's namespace from the upstream on the declared interval,
+and pull-through caches each declared fallback on demand.
+"""
+
+[[id]]
+id = "CS-02"
+level = "build"
+suite = "storage"
+tier = "T2"
+statement = """
+The network filesystem is exported to exactly the loopback of the one node that
+mounts it, and to no wildcard and no other node.
+"""
+
+[[id]]
+id = "CS-03"
+level = "build"
+suite = "storage"
+tier = "T2"
+statement = """
+The data volume runs its cache in writethrough mode, so losing the cache device
+is not losing origin data and a hard power loss has no dirty-data window.
+"""
+
+# ---------------------------------------------------------------------------
+# CW- --- Workload. Devcontainers and runners (SPEC.md §11, §9.5).
+# ---------------------------------------------------------------------------
+
+[[id]]
+id = "CW-01"
+level = "build"
+suite = "workload"
+tier = "T2"
+statement = """
+A devcontainer starts against the runtime the variant declares and a command
+executes inside the running container.
+"""
+
+[[id]]
+id = "CW-02"
+level = "build"
+suite = "workload"
+tier = "T2"
+statement = """
+Every declared runner is ephemeral and is restarted by its unit after each job,
+so draining a node is a matter of not re-registering rather than of killing work
+in flight.
+"""
+
+[[id]]
+id = "CW-04"
+level = "build"
+suite = "workload"
+tier = "T0"
+statement = """
+The URL a session is addressed by is a pure function of its identifier and
+carries no node name, so no migration can change it, and the identifier is the
+same one the SSH alias uses.
+"""
+
+[[id]]
+id = "CW-05"
+level = "build"
+suite = "workload"
+tier = "T0"
+statement = """
+The published tunnel Feature installs the command-line client and a supervisor
+into the container, namespaces the authentication directory by the container
+user's identifier, takes its backoff bounds from the model, and ships an
+unregister step; it does not bake the server payload.
+"""
+
+[[id]]
+id = "CW-03"
+level = "build"
+suite = "workload"
+tier = "T0"
+statement = """
+A devcontainer migration runs the six declared steps in order, treats everything
+up to the workspace copy as reversible and everything after the container stops
+as not, and recreates the container from the same image digest with the copied
+workspace.
+"""
+
+# ---------------------------------------------------------------------------
+# CU- --- Update. Rollout ordering, drain, rollback, quarantine, and
+# split-version interop (SPEC.md §13, §14).
+#
+# The ordering predicate and the drain plan are pure functions, so the claims
+# about them are discharged statically. §13.2 says its guarantee holds "by
+# construction ... for exactly one node in any consistent state", and a claim of
+# that shape is exactly the kind that is true of the design and false of the
+# code --- so CU-01 checks it by enumerating every assignment of digests across
+# the fleet rather than by argument.
+# ---------------------------------------------------------------------------
+
+[[id]]
+id = "CU-01"
+level = "build"
+suite = "update"
+tier = "T0"
+statement = """
+The rollout ordering predicate admits at most one node in any consistent state,
+runs the sequence to completion in the order model/cluster.toml declares, and
+reports a peer that is merely mid-flight as a wait rather than as a halt.
+"""
+
+[[id]]
+id = "CU-02"
+level = "build"
+suite = "update"
+tier = "T0"
+statement = """
+A target digest recorded as quarantined is never applied by any node.
+"""
+
+[[id]]
+id = "CU-03"
+level = "build"
+suite = "update"
+tier = "T0"
+statement = """
+A peer whose health cannot be read halts the rollout rather than being treated
+as healthy or unhealthy, and a halt is a decision distinct from an error.
+"""
+
+[[id]]
+id = "CU-04"
+level = "build"
+suite = "update"
+tier = "T0"
+statement = """
+Exceeding a drain budget whose declared action is halt stops the rollout and
+never terminates the work the budget was measuring.
+"""
+
+[[id]]
+id = "CU-05"
+level = "build"
+suite = "update"
+tier = "T0"
+statement = """
+A drain plan never migrates more declared memory than the model's cap allows,
+stops the excess with notice rather than migrating it, and chooses the same
+workloads on every run for the same input.
+"""
+
+[[id]]
+id = "CU-06"
+level = "build"
+suite = "update"
+tier = "T0"
+statement = """
+No workload is migrated to a node the model declares as never receiving one.
+"""
+
+[[id]]
+id = "CU-07"
+level = "build"
+suite = "update"
+tier = "T2"
+statement = """
+In a rollout across the booted fleet exactly one node is admitted at each stage,
+the nodes update in the order the model declares, and each returns healthy
+before the next is admitted.
+"""
+
+[[id]]
+id = "CU-08"
+level = "build"
+suite = "update"
+tier = "T2"
+statement = """
+A boot that fails the health predicate is rolled back to the previous deployment
+automatically, and the digest that failed is recorded as quarantined so no other
+node attempts it.
+"""
+
+[[id]]
+id = "CU-09"
+level = "build"
+suite = "update"
+tier = "T2"
+statement = """
+Draining the compute node moves a devcontainer's worktree to the migration
+target intact, and no workload reaches a node the model declares as never
+receiving one.
+"""
+
+[[id]]
+id = "CU-10"
+level = "build"
+suite = "update"
+tier = "T2"
+statement = """
+With the fleet split across the previously promoted release and the candidate,
+every node still reads and parses every peer's health report, so a rollout is
+survivable across one version boundary.
+"""
+
+# ---------------------------------------------------------------------------
+# CG- --- Reclamation. Retention, archive, and the dirty protection that is the
+# point of the whole policy (SPEC.md §15.3).
+#
+# The class rule §19.2 anticipates for the first CG- row is enforced by the
+# honesty meta-gate: a CG- scenario must include a dirty-workspace case.
+# Retention that is only tested on clean workspaces is retention that has never
+# been tested against the failure that matters.
+# ---------------------------------------------------------------------------
+
+[[id]]
+id = "CG-01"
+level = "build"
+suite = "reclaim"
+tier = "T0"
+statement = """
+A session idle past the notify threshold is marked idle and its owner notified,
+and one below the threshold is left alone --- whether or not its workspace is
+dirty.
+"""
+
+[[id]]
+id = "CG-02"
+level = "build"
+suite = "reclaim"
+tier = "T0"
+statement = """
+A clean session idle past the archive threshold is archived, archiving is
+reversible, and a session that reaches the purge threshold without having been
+archived is archived first so the reversible step is never skipped.
+"""
+
+[[id]]
+id = "CG-03"
+level = "build"
+suite = "reclaim"
+tier = "T0"
+statement = """
+A session whose workspace is dirty is never purged at any age or in any state,
+and is held indefinitely for acknowledgement, while an otherwise identical clean
+session is purged.
+"""
+
+[[id]]
+id = "CG-04"
+level = "build"
+suite = "reclaim"
+tier = "T0"
+statement = """
+Reclamation takes no action while a rollout is in progress, and never acts on a
+session a drain is migrating, so an idle archive is never confused with a
+session stopped because its host was updating.
+"""
+
+[[id]]
+id = "CG-05"
+level = "build"
+suite = "reclaim"
+tier = "T0"
+statement = """
+A reclamation decision is reachable only from a dirty flag observed immediately
+before it, never from the stored one, and a workspace whose state cannot be
+observed is treated as dirty.
+"""
+
+[[id]]
+id = "CG-06"
+level = "build"
+suite = "reclaim"
+tier = "T0"
+statement = """
+A workspace is dirty when it has uncommitted tracked changes, unpushed commits on
+any branch, or untracked non-ignored files; each condition is reported
+independently; and a workspace that cannot be inspected at all is reported dirty.
+"""
+
+[[id]]
+id = "CG-08"
+level = "build"
+suite = "reclaim"
+tier = "T0"
+statement = """
+A running editor server process is read as a client being attached and a running
+tunnel process alone is not, and a process table that cannot be read is read as
+attached --- so a session in use is never archived on the strength of a stale
+timestamp, dirty or clean.
+"""
+
+[[id]]
+id = "CG-07"
+level = "build"
+suite = "reclaim"
+tier = "T0"
+statement = """
+Every SSH session on a node records an attachment against its session, so a
+workspace somebody is using --- dirty or clean --- does not appear idle to the
+retention thresholds.
+"""
+
+# ---------------------------------------------------------------------------
+# CC- --- Control plane. The API, its authorization, and the UI build
+# (SPEC.md §16).
+# ---------------------------------------------------------------------------
+
+[[id]]
+id = "CC-01"
+level = "build"
+suite = "control"
+tier = "T0"
+statement = """
+Only a login model/cluster.toml permits may drive the cluster; a caller with no
+Tailscale identity and a caller with an unlisted one are refused distinctly, and
+an empty permit list refuses everyone rather than admitting everyone.
+"""
+
+[[id]]
+id = "CC-02"
+level = "build"
+suite = "control"
+tier = "T0"
+statement = """
+Every condition a caller of the control plane can see is one the model sanctions
+and carries a status that says what to do about it; none of them is an internal
+server error.
+"""
+
+[[id]]
+id = "CC-03"
+level = "build"
+suite = "control"
+tier = "T0"
+statement = """
+A node that rolled back records the failed digest as quarantined, the record
+survives a restart, a repeated report from the same node does not duplicate it,
+and nodes on differing digests are reported as a split version.
+"""
+
+[[id]]
+id = "CC-04"
+level = "build"
+suite = "control"
+tier = "T0"
+statement = """
+A session's connect response names the node currently hosting it, and the SSH
+alias it returns does not encode that node, so the alias survives a migration.
+"""
+
+[[id]]
+id = "CC-06"
+level = "build"
+suite = "control"
+tier = "T0"
+statement = """
+The rendered publish unit serves the control plane's own bind address over TLS on
+the tailnet, requires the control plane, and withdraws the publication when
+stopped.
+"""
+
+[[id]]
+id = "CC-07"
+level = "build"
+suite = "control"
+tier = "T0"
+statement = """
+A validated token's login is cached for the interval model/policy.toml declares
+and no longer, the cache is keyed on the token rather than the login, and the
+bound on revocation lag is therefore the declared interval.
+"""
+
+[[id]]
+id = "CC-08"
+level = "build"
+suite = "control"
+tier = "T0"
+statement = """
+The device flow's parameters are served without authentication because every one
+of them is public, the browser's authorization states are distinct so a page
+never shows a code it does not hold, and cross-origin access names one exact
+origin rather than a wildcard.
+"""
+
+[[id]]
+id = "CC-05"
+level = "build"
+suite = "control"
+tier = "T0"
+statement = """
+The web interface renders an unreachable control plane as an explicit
+disconnected state naming both reasons it cannot distinguish, never as an empty
+session list, and labels a held dirty archive distinctly from an ordinary one.
+"""
+
+# ---------------------------------------------------------------------------
+# The error types a shipped crate may let a caller see (R5).
+#
+# `cargo xtask audit-limits` reads this list rather than carrying one of its
+# own. A gate whose allowlist is edited to make it pass has stopped enforcing
+# anything, so adding a row here is a model change that names the claim under
+# which the error is a legitimate outcome --- and check-model fails if that
+# claim does not exist.
+#
+# ---------------------------------------------------------------------------
+
+[[error]]
+name = "ProbeError"
+crate = "cluster-health"
+sanctioned_by = "CB-01"
+statement = """
+A declared health probe could not be executed --- a missing binary, a permission
+denial, a socket that is not there. It never reports that a check failed: a
+failed check is an answer, and this is the absence of one. SPEC.md §13.2 halts
+the rollout on an unknown rather than treating it as either answer, so the two
+are different types and never collapse.
+"""
+
+[[error]]
+name = "RolloutError"
+crate = "cluster-updater"
+sanctioned_by = "CU-01"
+statement = """
+A rollout stage could not be completed: a registry that would not answer, a
+signature that did not verify, an upgrade that would not apply. It deliberately
+does not cover the ordinary outcomes --- "this node is not next" and "a peer is
+unhealthy" are decisions, the first being the normal middle of a rollout and the
+second a halt that alerts.
+"""
+
+[[error]]
+name = "ApiError"
+crate = "cluster-ctl"
+sanctioned_by = "CC-02"
+statement = """
+One of five conditions a caller of the control plane can act on: no Tailscale
+identity, an identity the model does not permit, an identifier that names
+nothing, a lifecycle transition the policy refuses, or a session store that
+cannot be read. There is deliberately no catch-all variant --- a 500 is the
+absence of a diagnosis, and this type exists so there is always one.
+"""
+
+[[error]]
+name = "AgentError"
+crate = "devcontainer-agent"
+sanctioned_by = "CG-06"
+statement = """
+The node-local agent could not carry out a step on this node's filesystem or
+container runtime. It deliberately does not cover "the workspace is dirty":
+that is an answer, and the dirty computation returns it as one.
+"""

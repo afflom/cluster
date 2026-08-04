@@ -18,6 +18,157 @@ The three honesty levels (R2):
 `cargo xtask audit-limits` fails if any code path returns an error the
 model does not sanction.
 
+## boot
+
+| ID | Level | Tier | Statement |
+| --- | --- | --- | --- |
+| `CB-01` | `build` | `T0` | The health predicate reports healthy exactly when all eight declared checks hold, each check can fail independently of the others, and a probe that cannot be executed is reported as an unknown rather than as a failed check. |
+| `CB-02` | `build` | `T1` | A node booted from a candidate image passes the health predicate, and every declared check is evaluated rather than merely declared. |
+| `CB-03` | `build` | `T1` | SELinux is enforcing on a booted node and the audit log holds no access-vector denial once the boot has settled. |
+| `CB-04` | `build` | `T1` | A booted node refuses a write to the read-only system tree and accepts one to the writable state tree. |
+| `CB-05` | `build` | `T1` | The runtime each variant declares is active on a booted node and its socket answers a Docker API version request. |
+| `CB-06` | `build` | `T1` | On the measurement node the kernel's isolated CPU set is the set the model declares, simultaneous multithreading is off, and the scaling governor is the declared one. |
+
+## control
+
+| ID | Level | Tier | Statement |
+| --- | --- | --- | --- |
+| `CC-01` | `build` | `T0` | Only a login model/cluster.toml permits may drive the cluster; a caller with no Tailscale identity and a caller with an unlisted one are refused distinctly, and an empty permit list refuses everyone rather than admitting everyone. |
+| `CC-02` | `build` | `T0` | Every condition a caller of the control plane can see is one the model sanctions and carries a status that says what to do about it; none of them is an internal server error. |
+| `CC-03` | `build` | `T0` | A node that rolled back records the failed digest as quarantined, the record survives a restart, a repeated report from the same node does not duplicate it, and nodes on differing digests are reported as a split version. |
+| `CC-04` | `build` | `T0` | A session's connect response names the node currently hosting it, and the SSH alias it returns does not encode that node, so the alias survives a migration. |
+| `CC-06` | `build` | `T0` | The rendered publish unit serves the control plane's own bind address over TLS on the tailnet, requires the control plane, and withdraws the publication when stopped. |
+| `CC-07` | `build` | `T0` | A validated token's login is cached for the interval model/policy.toml declares and no longer, the cache is keyed on the token rather than the login, and the bound on revocation lag is therefore the declared interval. |
+| `CC-08` | `build` | `T0` | The device flow's parameters are served without authentication because every one of them is public, the browser's authorization states are distinct so a page never shows a code it does not hold, and cross-origin access names one exact origin rather than a wildcard. |
+| `CC-05` | `build` | `T0` | The web interface renders an unreachable control plane as an explicit disconnected state naming both reasons it cannot distinguish, never as an empty session list, and labels a held dirty archive distinctly from an ordinary one. |
+
+## definition
+
+| ID | Level | Tier | Statement |
+| --- | --- | --- | --- |
+| `CD-01` | `build` | `T0` | Every rendered network unit for a physical interface matches its card by MAC address rather than by kernel name, and every MAC the model declares appears in exactly one unit. |
+| `CD-02` | `build` | `T0` | Every node renders a direct route to each peer loopback at the declared metric and a transit route to it, at the higher metric, via the remaining peer. |
+| `CD-03` | `build` | `T0` | The rendered firewall drops input by default, accepts only the flows the model declares, and forwards only between declared mesh addresses. |
+| `CD-04` | `build` | `T0` | The rendered hosts file resolves every node's mesh name and management name to the addresses the model declares, and adds no name the model does not. |
+| `CD-05` | `build` | `T0` | Every rendered Quadlet volume mount carries the SELinux relabel flag its model row declares. |
+| `CD-06` | `build` | `T0` | The rendered kernel arguments carry the base set on every node and the declared isolation set on the measurement node alone. |
+| `CD-07` | `build` | `T0` | The rendered kickstart partitions the boot device as the model declares and contains no secret value, only the named placeholders the installer substitutes. |
+| `CD-08` | `build` | `T0` | The rendered updater, health, garbage-collection and reclamation units carry the intervals, deadlines and budgets model/policy.toml declares, and the updater's environment carries this node's rollout position and every peer's health endpoint. |
+| `CD-09` | `build` | `T0` | The committed generated tree equals what the model renders, contains no file the model does not render, and every file in it names a registered definition claim in its header. |
+| `CD-11` | `build` | `T0` | The rendered container signature policy and registry configuration carry the issuer, identity, mirrors and fallbacks the model declares, and every address in a rendered artifact is substituted from the node table rather than written twice. |
+| `CD-12` | `build` | `T0` | Every rendered artifact is copied into an image by some build, every executable a rendered unit invokes is produced by a build or a declared package, every container image the model names in this repository's namespace has a Containerfile, every configuration a unit mounts read-only is rendered, and every control-plane endpoint any component calls is a route it serves. |
+| `CD-13` | `build` | `T0` | Every alert model/policy.toml declares renders as a rule carrying its condition, its duration and its severity, and no declared alert renders to nothing. |
+| `CD-14` | `build` | `T0` | The SSH daemon policy, the SELinux mode and type, and greenboot's deadline and attempt count are rendered from the model rather than declared a second time by an image build. |
+| `CD-15` | `build` | `T0` | The control plane is published on the tailnet by a rendered unit, and the tailnet access policy is rendered from the model's authorized logins and management prefix, advertising no mesh address. |
+| `CD-10` | `build` | `T0` | The rendered client SSH configuration carries a devcontainer alias that resolves a session's current host from the control plane and falls back to the last known host when the control plane is unreachable. |
+
+## hardware
+
+| ID | Level | Tier | Statement |
+| --- | --- | --- | --- |
+| `CH-01` | `build` | `T3` | Every firmware setting the model declares is observed to hold on every node, read through the probe the model names for it. |
+| `CH-05` | `build` | `T3` | Every node is the hardware its profile declares: the core count, the vector extensions, the maximum clock, the installed memory and slot count, and at least as many interfaces as the declared ports. |
+| `CH-06` | `build` | `T3` | Every node's management controller answers out of band and reports the declared restore-on-power-loss behaviour, and only the storage node carries a power-on delay. |
+| `CH-02` | `build` | `T3` | Every interface address the model declares is present on its node and carries the address the model gives that role, so a swapped cable or a replaced mainboard fails a gate rather than producing a silently mis-wired mesh. |
+| `CH-03` | `build` | `T3` | Every node has exactly the storage devices the model declares, each of the declared rotational kind, and every declared partition is mounted. |
+| `CH-04` | `build` | `T3` | After a promotion every real node passes the health predicate and the fleet is on one digest. |
+
+## image
+
+| ID | Level | Tier | Statement |
+| --- | --- | --- | --- |
+| `CI-01` | `build` | `T0` | Every Containerfile names its upstream base by the digest model/images.toml declares, exactly one does so, and none names a floating tag. |
+| `CI-05` | `build` | `T0` | The base pin records both the index digest and the distinct manifest digest for the declared architecture, the build targets that platform explicitly, and a scheduled workflow moves the pin, measures its staleness from the recorded date, passes the full gate, and proposes rather than commits. |
+| `CI-02` | `build` | `T0` | Each variant installs the packages of the runtime it declares, sets DOCKER_HOST to that runtime's socket, installs no package distinctive of the other runtime, and installs every package the model declares for it. |
+| `CI-03` | `build` | `T0` | Each variant copies in the rendered tree of the node it is built for and no other node's, and the base takes its tree from a build argument because the rendered network configuration is per node. |
+| `CI-04` | `build` | `T0` | Every image build runs the bootc container lint, so an image that is not a valid bootc host fails before a tier boots it. |
+
+## lifecycle
+
+| ID | Level | Tier | Statement |
+| --- | --- | --- | --- |
+| `CL-01` | `build` | `T0` | The rendered signature policy rejects by default and admits only a sigstore signature carrying the declared issuer and a certificate identity naming this repository's promote workflow, so an image signed by another workflow in the same repository does not stage. |
+| `CL-05` | `build` | `T0` | The promotion workflow builds an installer from the digest it promoted, using this repository's bootstrap configuration, and publishes the installer and its SHA-256 as release artifacts --- the anchor a first install has, since the signature policy that verifies every later image ships inside the image. |
+| `CL-02` | `build` | `T0` | Every registry prefix a node pulls carries a mirror on the local registry, and every fallback the model declares is rendered, so a pull continues over WAN when the local registry is unreachable. |
+| `CL-03` | `build` | `T0` | The build captures each image digest as a workflow output, promotion resolves its tag to a commit and copies that digest without rebuilding, signing precedes the copy to the stable tag, and promotions are serialised. |
+| `CL-04` | `build` | `T2` | An image in this repository's own namespace whose signature the shipped policy does not admit fails to stage, and the node is left running what it booted. |
+
+## model
+
+| ID | Level | Tier | Statement |
+| --- | --- | --- | --- |
+| `CM-01` | `build` | `T0` | The model is self-consistent, every file under model/ carries the schema tag this build understands, and CONFORMANCE.md equals what the register renders. |
+| `CM-02` | `build` | `T0` | Every registered ID has a scenario and a test whose name ends in it, every scenario and every test names a registered ID, no scenario has a pending step, and the meta-gate itself can be made to fail. |
+| `CM-03` | `build` | `T0` | Every some-true claim cites an authority that exists, with a citation and either a checksum over a committed artifact or a stated reason there is none. |
+| `CM-04` | `build` | `T0` | Every registered claim is collected by exactly one validation tier, and no simulated tier collects a hardware claim, so a claim about a physical machine can never be discharged by a guest. |
+
+## network
+
+| ID | Level | Tier | Statement |
+| --- | --- | --- | --- |
+| `CN-01` | `build` | `T2` | Every node reaches every peer loopback with a datagram of the full mesh payload size and the do-not-fragment flag set, so a path that will not carry jumbo frames fails rather than answering a smaller probe. |
+| `CN-02` | `build` | `T2` | When one mesh link loses carrier, the nodes it joined remain reachable by the transit route through the remaining peer, and the path taken changes. |
+| `CN-03` | `build` | `T2` | The loaded packet filter on every node defaults to drop on input and carries every flow the model declares for that node. |
+
+## reclaim
+
+| ID | Level | Tier | Statement |
+| --- | --- | --- | --- |
+| `CG-01` | `build` | `T0` | A session idle past the notify threshold is marked idle and its owner notified, and one below the threshold is left alone --- whether or not its workspace is dirty. |
+| `CG-02` | `build` | `T0` | A clean session idle past the archive threshold is archived, archiving is reversible, and a session that reaches the purge threshold without having been archived is archived first so the reversible step is never skipped. |
+| `CG-03` | `build` | `T0` | A session whose workspace is dirty is never purged at any age or in any state, and is held indefinitely for acknowledgement, while an otherwise identical clean session is purged. |
+| `CG-04` | `build` | `T0` | Reclamation takes no action while a rollout is in progress, and never acts on a session a drain is migrating, so an idle archive is never confused with a session stopped because its host was updating. |
+| `CG-05` | `build` | `T0` | A reclamation decision is reachable only from a dirty flag observed immediately before it, never from the stored one, and a workspace whose state cannot be observed is treated as dirty. |
+| `CG-06` | `build` | `T0` | A workspace is dirty when it has uncommitted tracked changes, unpushed commits on any branch, or untracked non-ignored files; each condition is reported independently; and a workspace that cannot be inspected at all is reported dirty. |
+| `CG-08` | `build` | `T0` | A running editor server process is read as a client being attached and a running tunnel process alone is not, and a process table that cannot be read is read as attached --- so a session in use is never archived on the strength of a stale timestamp, dirty or clean. |
+| `CG-07` | `build` | `T0` | Every SSH session on a node records an attachment against its session, so a workspace somebody is using --- dirty or clean --- does not appear idle to the retention thresholds. |
+
+## storage
+
+| ID | Level | Tier | Statement |
+| --- | --- | --- | --- |
+| `CS-01` | `build` | `T2` | A node that does not host the registry pulls its own image from it across the mesh. |
+| `CS-04` | `build` | `T0` | The rendered registry configuration binds the storage node's mesh loopback, mirrors this repository's namespace from the upstream on the declared interval, and pull-through caches each declared fallback on demand. |
+| `CS-02` | `build` | `T2` | The network filesystem is exported to exactly the loopback of the one node that mounts it, and to no wildcard and no other node. |
+| `CS-03` | `build` | `T2` | The data volume runs its cache in writethrough mode, so losing the cache device is not losing origin data and a hard power loss has no dirty-data window. |
+
+## update
+
+| ID | Level | Tier | Statement |
+| --- | --- | --- | --- |
+| `CU-01` | `build` | `T0` | The rollout ordering predicate admits at most one node in any consistent state, runs the sequence to completion in the order model/cluster.toml declares, and reports a peer that is merely mid-flight as a wait rather than as a halt. |
+| `CU-02` | `build` | `T0` | A target digest recorded as quarantined is never applied by any node. |
+| `CU-03` | `build` | `T0` | A peer whose health cannot be read halts the rollout rather than being treated as healthy or unhealthy, and a halt is a decision distinct from an error. |
+| `CU-04` | `build` | `T0` | Exceeding a drain budget whose declared action is halt stops the rollout and never terminates the work the budget was measuring. |
+| `CU-05` | `build` | `T0` | A drain plan never migrates more declared memory than the model's cap allows, stops the excess with notice rather than migrating it, and chooses the same workloads on every run for the same input. |
+| `CU-06` | `build` | `T0` | No workload is migrated to a node the model declares as never receiving one. |
+| `CU-07` | `build` | `T2` | In a rollout across the booted fleet exactly one node is admitted at each stage, the nodes update in the order the model declares, and each returns healthy before the next is admitted. |
+| `CU-08` | `build` | `T2` | A boot that fails the health predicate is rolled back to the previous deployment automatically, and the digest that failed is recorded as quarantined so no other node attempts it. |
+| `CU-09` | `build` | `T2` | Draining the compute node moves a devcontainer's worktree to the migration target intact, and no workload reaches a node the model declares as never receiving one. |
+| `CU-10` | `build` | `T2` | With the fleet split across the previously promoted release and the candidate, every node still reads and parses every peer's health report, so a rollout is survivable across one version boundary. |
+
+## workload
+
+| ID | Level | Tier | Statement |
+| --- | --- | --- | --- |
+| `CW-01` | `build` | `T2` | A devcontainer starts against the runtime the variant declares and a command executes inside the running container. |
+| `CW-02` | `build` | `T2` | Every declared runner is ephemeral and is restarted by its unit after each job, so draining a node is a matter of not re-registering rather than of killing work in flight. |
+| `CW-04` | `build` | `T0` | The URL a session is addressed by is a pure function of its identifier and carries no node name, so no migration can change it, and the identifier is the same one the SSH alias uses. |
+| `CW-05` | `build` | `T0` | The published tunnel Feature installs the command-line client and a supervisor into the container, namespaces the authentication directory by the container user's identifier, takes its backoff bounds from the model, and ships an unregister step; it does not bake the server payload. |
+| `CW-03` | `build` | `T0` | A devcontainer migration runs the six declared steps in order, treats everything up to the workspace copy as reversible and everything after the container stops as not, and recreates the container from the same image digest with the copied workspace. |
+
+## Sanctioned errors
+
+Every error a caller can see (R5). `cargo xtask audit-limits` reads this
+list; a `Result` over anything else fails the gate.
+
+| Error | Crate | Sanctioned by | Reports |
+| --- | --- | --- | --- |
+| `ProbeError` | `cluster-health` | `CB-01` | A declared health probe could not be executed --- a missing binary, a permission denial, a socket that is not there. It never reports that a check failed: a failed check is an answer, and this is the absence of one. SPEC.md §13.2 halts the rollout on an unknown rather than treating it as either answer, so the two are different types and never collapse. |
+| `RolloutError` | `cluster-updater` | `CU-01` | A rollout stage could not be completed: a registry that would not answer, a signature that did not verify, an upgrade that would not apply. It deliberately does not cover the ordinary outcomes --- "this node is not next" and "a peer is unhealthy" are decisions, the first being the normal middle of a rollout and the second a halt that alerts. |
+| `ApiError` | `cluster-ctl` | `CC-02` | One of five conditions a caller of the control plane can act on: no Tailscale identity, an identity the model does not permit, an identifier that names nothing, a lifecycle transition the policy refuses, or a session store that cannot be read. There is deliberately no catch-all variant --- a 500 is the absence of a diagnosis, and this type exists so there is always one. |
+| `AgentError` | `devcontainer-agent` | `CG-06` | The node-local agent could not carry out a step on this node's filesystem or container runtime. It deliberately does not cover "the workspace is dirty": that is an answer, and the dirty computation returns it as one. |
+
 ## Cited authorities
 
 Never re-derived, vendored, or gated on.

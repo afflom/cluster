@@ -1,0 +1,25 @@
+# bootc-image-builder configuration (SPEC.md §12.1).
+#
+# Produces the installer ISO a node is first provisioned from. The ISO's SHA-256
+# is published in the release and verified out of band, and **that checksum is
+# the root of trust**: §12.3's signature policy ships inside the image, so the
+# first install cannot verify itself and is anchored by the checksum instead.
+#
+# The kickstart is rendered from the model into generated/bootstrap/<node>.ks and
+# is diff-gated (§7.2, CD-07). This file only says how to wrap it.
+
+[customizations.installer.kickstart]
+# Substituted at ISO build time from Actions secrets. The rendered kickstart
+# carries the @@PLACEHOLDER@@ names and never a value --- a kickstart is a
+# plain-text file in a repository, and a secret in one is a secret published
+# (§12.2, CD-07).
+contents = "@@RENDERED_KICKSTART@@"
+
+[customizations.installer.modules]
+# Everything the installer does is in the kickstart. An interactive module would
+# be a prompt on a headless node that nobody is standing in front of.
+disable = ["org.fedoraproject.Anaconda.Modules.Users"]
+
+[[customizations.filesystem]]
+mountpoint = "/"
+minsize = "20 GiB"
