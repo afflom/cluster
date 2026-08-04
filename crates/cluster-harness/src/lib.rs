@@ -87,7 +87,8 @@ impl Acceleration {
         "SKIPPED: no guest was booted and nothing in this tier was tested. The ",
         "harness does not fall back to TCG: a tier that quietly emulated would ",
         "be slower, differently timed, and would look green (SPEC.md §9.4). T2 ",
-        "runs on n1, where KVM is guaranteed, so nothing is promoted on a ",
+        "runs on the storage node, where KVM is guaranteed, so nothing is ",
+        "promoted on a ",
         "skipped tier. What was missing:"
     );
 

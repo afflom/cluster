@@ -119,15 +119,27 @@ fn discover_firmware() -> Option<(PathBuf, PathBuf)> {
 
 impl Fixture {
     /// The fixture the tiers use, from the environment the workflow sets.
+    ///
+    /// Relative paths are resolved against the **repository root**, not the
+    /// working directory. `cargo run` runs from the workspace root and
+    /// `cargo test` runs from the package root, so `target/harness/base.qcow2`
+    /// named two different files depending on which half of `just t1` was
+    /// asking --- the driver found the disk and reported the fixture present,
+    /// then every test in the tier reported it missing.
+    ///
+    /// That was latent for as long as T1 never actually ran. It surfaced the
+    /// first time one did, which is the argument for the tier having to boot
+    /// something before it is believed.
     pub fn from_environment() -> Self {
+        let root = cluster_model::repo_root();
+        let at = |relative: &str| -> PathBuf { root.join(relative) };
         Self {
-            backing: PathBuf::from(
-                std::env::var("CLUSTER_BACKING_IMAGE")
-                    .unwrap_or_else(|_| "target/harness/base.qcow2".to_string()),
-            ),
-            scratch: PathBuf::from(
-                std::env::var("CLUSTER_SCRATCH").unwrap_or_else(|_| "target/harness".to_string()),
-            ),
+            backing: std::env::var("CLUSTER_BACKING_IMAGE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| at("target/harness/base.qcow2")),
+            scratch: std::env::var("CLUSTER_SCRATCH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| at("target/harness")),
             firmware_code: std::env::var("CLUSTER_OVMF_CODE")
                 .map(PathBuf::from)
                 .ok()

@@ -209,6 +209,18 @@ That is the second time in this repository a gate has looked green for a reason
 unrelated to what it claims to check, and both times the tell was the same: the
 failure message did not mention the thing being planted.
 
+**The tier driver and the tier's tests disagreed about where the disk was.**
+`Fixture::from_environment` resolved `target/harness/base.qcow2` against the
+working directory. `cargo run` runs from the workspace root and `cargo test` runs
+from the package root, so `just t1` found the disk with its first command and
+reported it missing with its second --- seven tests failing with a skip notice
+about a file that was sitting there.
+
+It had been latent for as long as T1 never actually ran, and it surfaced on the
+first run that got far enough to boot something. Paths now resolve against the
+repository root. This is the argument for a tier having to boot something before
+it is believed: two commits earlier the same code passed, having tested nothing.
+
 **The image shipped a world-writable signature policy, and nothing failed.**
 `COPY` preserves the mode of the file on the build host. `just render` used
 `std::fs::write`, which takes the umask, and a permissive one produced a `0666`
