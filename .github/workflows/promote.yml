@@ -119,6 +119,10 @@ jobs:
           for node in n1 n2 n3; do
             ref="ghcr.io/${{ github.repository }}/$node"
             digest=$(crane digest "$ref:stable")
+            # bootc-image-builder reads root's storage and pulls nothing itself.
+            sudo podman login ghcr.io \
+              -u '${{ github.actor }}' -p '${{ secrets.GITHUB_TOKEN }}'
+            sudo podman pull "$ref@$digest"
             sudo podman run --rm --privileged \
               --security-opt label=type:unconfined_t \
               -v ./iso:/output \

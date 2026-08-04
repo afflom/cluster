@@ -60,10 +60,38 @@ jobs:
             podman build --platform linux/amd64 --build-arg BASE="localhost/cluster-base-$node" \
               -f "images/$node/Containerfile" \
               -t "ghcr.io/${{ github.repository }}/$node:ci-${{ github.sha }}" .
-            podman push "ghcr.io/${{ github.repository }}/$node:ci-${{ github.sha }}"
+            # Retry with backoff. GHCR answers a secondary rate limit as a 403
+            # whose *body* says to wait and try again --- the surface looks like
+            # a permission failure and is not one, which cost an hour to find.
+            # Three images of a few hundred megabytes each, pushed back to back,
+            # reach that limit on a repository with any push activity.
+            #
+            # GitHub's own guidance for a secondary limit is to wait and retry,
+            # so that is what this does rather than failing a build over a
+            # throttle.
+            pushed=false
+            for attempt in 1 2 3 4 5; do
+              if podman push "ghcr.io/${{ github.repository }}/$node:ci-${{ github.sha }}"; then
+                pushed=true
+                break
+              fi
+              delay=$(( attempt * 30 ))
+              echo "::warning title=Push retry::$node push attempt $attempt failed;" \
+                   "waiting ${delay}s. A 403 from ghcr.io is usually a secondary" \
+                   "rate limit rather than a permission problem."
+              sleep "$delay"
+            done
+            if [ "$pushed" != true ]; then
+              echo "::error::$node could not be pushed after 5 attempts." >&2
+              exit 1
+            fi
             digest=$(podman inspect --format '{{.Digest}}' \
               "ghcr.io/${{ github.repository }}/$node:ci-${{ github.sha }}")
             echo "$node=$digest" >> "$GITHUB_OUTPUT"
+            # A pause between images. The limit is on the rate, and three
+            # back-to-back pushes are what reaches it; this costs a minute and
+            # removes the usual cause of the retries above.
+            sleep 20
           done
 
   t1:
@@ -87,16 +115,28 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target/harness
-          # bootc-image-builder turns the promoted container into a disk. The
-          # tier boots that, not a hand-made image, so what T1 asserts over is
-          # the artifact the fleet would install.
+
+          # By digest, not by tag. §9.2: build once, validate *that digest*,
+          # promote that digest --- a tag could have moved between the push and
+          # here, and then the tier would validate something else.
+          image="ghcr.io/${{ github.repository }}/n3@${{ needs.build.outputs.n3 }}"
+
+          # bootc-image-builder reads root's container storage and no longer
+          # pulls anything itself, so the image has to be in *root's* storage
+          # before it runs --- a login as the runner user is not enough.
+          sudo podman login ghcr.io \
+            -u '${{ github.actor }}' -p '${{ secrets.GITHUB_TOKEN }}'
+          sudo podman pull "$image"
+
+          # It turns the container into a disk. The tier boots that, not a
+          # hand-made image, so what T1 asserts over is the artifact the fleet
+          # would install.
           sudo podman run --rm --privileged \
             --security-opt label=type:unconfined_t \
             -v ./target/harness:/output \
             -v /var/lib/containers/storage:/var/lib/containers/storage \
             quay.io/centos-bootc/bootc-image-builder:latest \
-            --type qcow2 --local \
-            "ghcr.io/${{ github.repository }}/n3:ci-${{ github.sha }}"
+            --type qcow2 "$image"
           sudo mv target/harness/qcow2/disk.qcow2 target/harness/base.qcow2
           sudo chown "$USER" target/harness/base.qcow2
 
@@ -157,13 +197,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target/harness
+          image="ghcr.io/${{ github.repository }}/n1@${{ needs.build.outputs.n1 }}"
+          sudo podman login ghcr.io \
+            -u '${{ github.actor }}' -p '${{ secrets.GITHUB_TOKEN }}'
+          sudo podman pull "$image"
           sudo podman run --rm --privileged \
             --security-opt label=type:unconfined_t \
             -v ./target/harness:/output \
             -v /var/lib/containers/storage:/var/lib/containers/storage \
             quay.io/centos-bootc/bootc-image-builder:latest \
-            --type qcow2 --local \
-            "ghcr.io/${{ github.repository }}/n1:ci-${{ github.sha }}"
+            --type qcow2 "$image"
           sudo mv target/harness/qcow2/disk.qcow2 target/harness/base.qcow2
 
       - name: Build an unsigned image, for the claim that it is refused
