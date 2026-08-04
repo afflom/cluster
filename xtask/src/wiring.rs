@@ -46,6 +46,9 @@ const FROM_PACKAGES: &[&str] = &[
     "/usr/bin/timeout",
     "/usr/bin/systemctl",
     "/usr/bin/nft",
+    "/usr/sbin/nft",
+    "/usr/bin/install",
+    "/usr/bin/ostree",
 ];
 
 /// Run every wiring check.

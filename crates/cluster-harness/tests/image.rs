@@ -612,3 +612,53 @@ fn the_tunnel_feature_installs_what_will_run_cw_05() {
          registered collides with any session recreated under the same id"
     );
 }
+
+/// `CL-06`: nothing is promoted on a tier that did not run.
+///
+/// §9.3 says an operator pushes the tag onto a commit whose tiers are green.
+/// This is what makes that a property of the pipeline rather than of the
+/// operator's memory --- and it is what makes T2's fleet gate safe. A tier that
+/// cannot be scheduled is skipped, and skipped must not read as consent.
+#[test]
+fn nothing_is_promoted_on_a_tier_that_did_not_run_cl_06() {
+    let flows = workflows(&root());
+    let promote = flows
+        .iter()
+        .find(|w| w.name == "promote.yml")
+        .expect("promote.yml");
+
+    assert!(
+        promote.does("--workflow=images.yml"),
+        "promotion must look up the validation run for the commit it promotes"
+    );
+    // Every tier, not just the cheap ones.
+    for tier in ["build", "t1", "t2"] {
+        assert!(promote.does(tier), "promotion must check {tier} (§9.3)");
+    }
+    // The distinction the whole check exists for.
+    assert!(
+        promote.does("skipped"),
+        "a skipped tier must be refused, not read as an absence (§9.4)"
+    );
+    assert!(
+        promote.does("no images.yml run"),
+        "a commit with no validation run at all is refused"
+    );
+
+    // And the gate that makes the refusal necessary: the self-hosted tiers are
+    // conditional on the fleet existing, so `skipped` is a state that really
+    // occurs rather than a hypothetical.
+    let images = flows
+        .iter()
+        .find(|w| w.name == "images.yml")
+        .expect("images.yml");
+    assert!(
+        images.does("CLUSTER_FLEET_ONLINE"),
+        "the fleet gate is what makes a skipped tier reachable"
+    );
+    assert!(
+        images.does("T2 did not run"),
+        "and it is announced: a tier that quietly did not run is the vacuous \
+         gate in its most convincing disguise (§9.4)"
+    );
+}

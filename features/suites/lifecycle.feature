@@ -45,3 +45,12 @@ Feature: lifecycle
     And it builds it with this repository's bootstrap configuration
     And it publishes the installer and its SHA-256 as release artifacts
     And that checksum is the anchor a first install has, the policy shipping inside the image
+
+  @CL-06 @build
+  Scenario: Nothing is promoted on a tier that did not run
+    Given the promotion workflow
+    When it is read
+    Then it resolves its tag to a commit and finds that commit's build run
+    And it refuses a commit with no build run at all
+    And it refuses a tier whose outcome is failure
+    And it refuses a tier that was skipped, rather than reading absence as consent

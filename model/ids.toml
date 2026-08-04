@@ -337,6 +337,17 @@ signature policy that verifies every later image ships inside the image.
 """
 
 [[id]]
+id = "CL-06"
+level = "build"
+suite = "lifecycle"
+tier = "T0"
+statement = """
+Promotion refuses a commit whose build or validation tiers did not succeed, and
+treats a tier that was skipped as a refusal rather than as an absence, so nothing
+is promoted on a tier that did not run.
+"""
+
+[[id]]
 id = "CL-02"
 level = "build"
 suite = "lifecycle"

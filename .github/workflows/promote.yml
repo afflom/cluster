@@ -37,6 +37,43 @@ jobs:
         id: source
         run: echo "sha=$(git rev-list -n1 '${{ github.ref_name }}')" >> "$GITHUB_OUTPUT"
 
+      # §9.3: an operator pushes the tag onto a commit whose T0, T1 and T2 are
+      # green. This checks that rather than trusting it --- and it is what makes
+      # T2's fleet gate safe: a tier that did not run cannot be promoted past,
+      # because "did not run" is not "success" (§9.4).
+      - name: Refuse a commit whose tiers did not pass
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          sha='${{ steps.source.outputs.sha }}'
+
+          run_id=$(gh run list --workflow=images.yml --commit="$sha" \
+            --json databaseId,conclusion --jq '.[0].databaseId // empty')
+          if [ -z "$run_id" ]; then
+            echo "::error::no images.yml run for $sha. §9.3 promotes a commit whose" \
+                 "tiers are green; this one has none." >&2
+            exit 1
+          fi
+
+          jobs=$(gh api "repos/${{ github.repository }}/actions/runs/$run_id/jobs" \
+            --jq '.jobs[] | "\(.name)=\(.conclusion)"')
+          echo "$jobs"
+
+          for tier in build t1 t2; do
+            outcome=$(echo "$jobs" | sed -n "s/^${tier}=//p" | head -1)
+            case "$outcome" in
+              success)  echo "$tier: green" ;;
+              skipped)
+                echo "::error::$tier was skipped on $sha. Nothing is promoted on a" \
+                     "skipped tier (§9.4)." >&2
+                exit 1 ;;
+              *)
+                echo "::error::$tier is '$outcome' on $sha (§9.3)." >&2
+                exit 1 ;;
+            esac
+          done
+
       - uses: sigstore/cosign-installer@v3
       - uses: imjasonh/setup-crane@v0.4
       - uses: redhat-actions/podman-login@v1

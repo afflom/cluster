@@ -28,7 +28,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: trunk
-      - run: trunk build --release crates/cluster-web/index.html
+      # The target comes before the flag: `--release` takes an optional value,
+      # so `--release <path>` consumes the path as its value and trunk rejects it.
+      - run: trunk build crates/cluster-web/index.html --release
         env:
           CLUSTER_API_BASE: ${{ vars.CLUSTER_API_BASE }}
       - uses: actions/upload-pages-artifact@v3
@@ -56,6 +58,11 @@ jobs:
   # does not exist yet (§22).
   mirror:
     needs: build
+    # Gated on the fleet existing, for the reason images.yml's T2 is: a job
+    # queued against a runner that does not exist blocks the workflow for ever.
+    # Pages remains canonical either way (§16.3), so an absent mirror is a route
+    # that does not exist yet rather than a UI that does not work.
+    if: vars.CLUSTER_FLEET_ONLINE == 'true'
     runs-on: [self-hosted, linux, x64, cluster, ci]
     steps:
       - uses: actions/download-artifact@v4

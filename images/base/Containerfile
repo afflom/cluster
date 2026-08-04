@@ -59,17 +59,21 @@ COPY generated/${NODE}/sshd_config.d/ /etc/ssh/sshd_config.d/
 COPY generated/${NODE}/selinux/config /etc/selinux/config
 COPY generated/${NODE}/greenboot.conf /etc/greenboot/greenboot.conf
 
-# Rendered configuration is inert until something loads it. /etc is three-way
-# merged on update (§5.2), so writing these at *build* time is the bootc grain:
-# they are a property of the image, not of what last ran on the node.
-RUN install -D -m 0644 /usr/lib/cluster/hosts /etc/hosts  && install -D -m 0644 /usr/lib/cluster/nftables.conf /etc/sysconfig/nftables.conf
+# The hosts file and the packet filter are read from where they were shipped.
+#
+# /etc/hosts cannot be written by a container build: a RUN finds the path
+# bind-mounted and busy, and a COPY to it is *silently dropped*, producing an
+# image that builds clean and has no hosts file. Both were observed before this
+# comment existed. So `cluster-hosts.service` places it at boot, and a drop-in
+# points `nftables.service` at the rendered ruleset in /usr rather than copying
+# it into /etc (§4.3, §4.4).
 
 # Recording an attachment on every SSH connection is what keeps a session
 # somebody is using from looking idle to §15.3's thresholds.
 COPY generated/${NODE}/sshrc /etc/ssh/sshrc
 RUN chmod 0644 /etc/ssh/sshrc
 
-RUN systemctl enable nftables.service
+RUN systemctl enable nftables.service cluster-hosts.service
 
 # SELinux policy is compiled at build time and shipped, never compiled at runtime
 # on a read-only root (§8.3).

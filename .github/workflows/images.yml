@@ -126,7 +126,18 @@ jobs:
     #
     # Not circular: n1 runs the *previously promoted* image while validating the
     # candidate in guests (§9.4).
+    #
+    # Gated on the fleet existing. Until a node is registered as a runner there
+    # is nothing to schedule this on, and a job queued against a runner that
+    # does not exist blocks the workflow for ever rather than reporting
+    # anything. `t2-outcome` below always runs and says which happened, so an
+    # absent tier is announced rather than assumed --- the same discipline §9.4
+    # applies to a missing /dev/kvm.
+    #
+    # Nothing is promoted on a skipped tier: `promote.yml` refuses a commit
+    # whose T2 did not succeed, so this gate cannot become a way past T2.
     needs: build
+    if: vars.CLUSTER_FLEET_ONLINE == 'true'
     runs-on: [self-hosted, linux, x64, cluster, ci]
     steps:
       - uses: actions/checkout@v4
@@ -162,3 +173,28 @@ jobs:
           CLUSTER_TARGET_DIGEST: ${{ needs.build.outputs.n1 }}
           CLUSTER_PREVIOUS_STABLE: ghcr.io/${{ github.repository }}/n1:stable
           CLUSTER_UNSIGNED_IMAGE: ghcr.io/${{ github.repository }}/n3:unsigned-${{ github.sha }}
+
+  # Whether T2 ran, said out loud. A tier that quietly did not run is the
+  # vacuous gate in its most convincing disguise (§9.4).
+  t2-outcome:
+    needs: [build, t2]
+    if: always() && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report the tier's outcome
+        run: |
+          set -euo pipefail
+          case "${{ needs.t2.result }}" in
+            success)
+              echo "T2 ran and passed." ;;
+            skipped)
+              echo "::notice title=T2 did not run::The fleet is not registered as a \
+              runner, so nothing was tested at T2. Set the CLUSTER_FLEET_ONLINE \
+              repository variable once n1 has a runner. Promotion refuses a commit \
+              whose T2 did not succeed, so nothing can be promoted on this (SPEC.md \
+              §9.4, §22)."
+              ;;
+            *)
+              echo "::error title=T2 failed::T2 ran and did not pass." >&2
+              exit 1 ;;
+          esac
