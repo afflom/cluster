@@ -137,7 +137,18 @@ jobs:
     # Nothing is promoted on a skipped tier: `promote.yml` refuses a commit
     # whose T2 did not succeed, so this gate cannot become a way past T2.
     needs: build
-    if: vars.CLUSTER_FLEET_ONLINE == 'true'
+    # Never for a fork. §9.1 derives "T2 may run on n1" from fork pull requests
+    # not existing, which was true only while the repository was private. It is
+    # public, so a fork's pull request would otherwise schedule that fork's code
+    # on a node holding the registry, the object store and every devcontainer.
+    #
+    # This is a guard, not the fix. §9.1's precondition does not hold and the
+    # specification says so (§21.10): either the repository goes private again,
+    # or T2 moves to hosted runners.
+    if: >-
+      vars.CLUSTER_FLEET_ONLINE == 'true'
+      && (github.event_name != 'pull_request'
+          || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, linux, x64, cluster, ci]
     steps:
       - uses: actions/checkout@v4

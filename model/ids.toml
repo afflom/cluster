@@ -359,6 +359,16 @@ is promoted on a tier that did not run.
 """
 
 [[id]]
+id = "CL-07"
+level = "build"
+suite = "lifecycle"
+tier = "T0"
+statement = """
+No workflow schedules a job on a self-hosted runner for a pull request whose head
+repository is not this one, so code from a fork never runs on a node.
+"""
+
+[[id]]
 id = "CL-02"
 level = "build"
 suite = "lifecycle"

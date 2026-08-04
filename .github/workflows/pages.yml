@@ -40,8 +40,38 @@ jobs:
         with:
           path: crates/cluster-web/dist
 
-  deploy:
+  # Whether Pages is enabled on the repository. It is an owner-only setting that
+  # no token available to a workflow can flip, so this asks rather than assumes:
+  # `deploy-pages` answers 404 when it is off, and a workflow that treated that
+  # as a build failure would report a settings page as broken code.
+  #
+  # Self-healing: enable Pages in Settings and the next run deploys. There is no
+  # variable to remember to set afterwards.
+  pages-enabled:
     needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.probe.outputs.enabled }}
+    steps:
+      - id: probe
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          if gh api "repos/${{ github.repository }}/pages" >/dev/null 2>&1; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Pages not enabled::GitHub Pages is off for this \
+            repository, so the bundle was built and not published. Enable it at \
+            Settings -> Pages with source 'GitHub Actions'; the next run deploys. \
+            The n1 mirror (SPEC.md §16.3) is unaffected and is the route that \
+            always works."
+          fi
+
+  deploy:
+    needs: [build, pages-enabled]
+    if: needs.pages-enabled.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -65,7 +95,18 @@ jobs:
     # queued against a runner that does not exist blocks the workflow for ever.
     # Pages remains canonical either way (§16.3), so an absent mirror is a route
     # that does not exist yet rather than a UI that does not work.
-    if: vars.CLUSTER_FLEET_ONLINE == 'true'
+    # Never for a fork. §9.1 derives "T2 may run on n1" from fork pull requests
+    # not existing, which was true only while the repository was private. It is
+    # public, so a fork's pull request would otherwise schedule that fork's code
+    # on a node holding the registry, the object store and every devcontainer.
+    #
+    # This is a guard, not the fix. §9.1's precondition does not hold and the
+    # specification says so (§21.10): either the repository goes private again,
+    # or T2 moves to hosted runners.
+    if: >-
+      vars.CLUSTER_FLEET_ONLINE == 'true'
+      && (github.event_name != 'pull_request'
+          || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, linux, x64, cluster, ci]
     steps:
       - uses: actions/download-artifact@v4

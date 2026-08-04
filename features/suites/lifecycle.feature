@@ -54,3 +54,10 @@ Feature: lifecycle
     And it refuses a commit with no build run at all
     And it refuses a tier whose outcome is failure
     And it refuses a tier that was skipped, rather than reading absence as consent
+
+  @CL-07 @build
+  Scenario: A fork's code never runs on a node
+    Given the workflows that schedule jobs on self-hosted runners
+    When each is read
+    Then every such job refuses a pull request from another repository
+    And the guard is present whether or not the fleet is currently registered

@@ -15,6 +15,10 @@ jobs:
     # establish that VT-x is enabled in firmware, that a MAC belongs to the card
     # the model says it does, or that a SATA device is mounted where §2.2
     # requires --- and the collector refuses to hand it one (§19.2).
+    # Triggered by a published release or by hand, never by a pull request, so
+    # no fork's code reaches this runner. Gated on the fleet existing for the
+    # same reason images.yml's T2 is (§9.4).
+    if: vars.CLUSTER_FLEET_ONLINE == 'true'
     runs-on: [self-hosted, linux, x64, cluster, ci]
     steps:
       - uses: actions/checkout@v4

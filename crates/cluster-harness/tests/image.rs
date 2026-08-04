@@ -738,3 +738,47 @@ fn every_upstream_binary_is_pinned_and_verified_ci_06() {
         "the model declares an upstream binary, or this test checks nothing"
     );
 }
+
+/// `CL-07`: a fork's code never runs on a node.
+///
+/// §9.1 derives "T2 may run on `n1`" from fork pull requests not existing, which
+/// held only while the repository was private. It is public (§21.10), so this
+/// guard carries weight the specification's own reasoning no longer does: a
+/// self-hosted runner executing a fork's workflow is arbitrary code on the node
+/// holding the registry, the object store and every devcontainer.
+#[test]
+fn no_fork_runs_on_a_self_hosted_runner_cl_07() {
+    let flows = workflows(&root());
+    let mut guarded = 0usize;
+
+    for flow in &flows {
+        // Only workflows that actually schedule something self-hosted.
+        if !flow.does("self-hosted") {
+            continue;
+        }
+        // Triggered only by a release or by hand cannot receive a fork's code.
+        let fork_reachable = flow.does("pull_request");
+        if fork_reachable {
+            assert!(
+                flow.does("head.repo.full_name == github.repository"),
+                "{}: schedules a self-hosted job and can be reached by a pull \
+                 request, without comparing the head repository (§21.10)",
+                flow.name
+            );
+        }
+        // And every one is gated on the fleet existing, so a job cannot queue
+        // against a runner that was never registered (§9.4).
+        assert!(
+            flow.does("CLUSTER_FLEET_ONLINE"),
+            "{}: a self-hosted job must be gated on the fleet existing",
+            flow.name
+        );
+        guarded += 1;
+    }
+
+    assert!(
+        guarded >= 3,
+        "expected the image, pages and smoke workflows to schedule self-hosted \
+         work; found {guarded}"
+    );
+}

@@ -511,6 +511,12 @@ neither, and §21 records why.
 
 ### 9.1 Visibility, and what follows from it
 
+**This section's premise does not currently hold.** The repository is *public*.
+§21.10 records that, and the two consequences below are written as they were
+derived --- from a private repository --- because the derivation is what has to
+change, not the wording. Until it does, the workflows guard the exposed half by
+refusing to schedule a self-hosted job for a pull request from a fork.
+
 **The repository is private, and its GHCR packages are private.** Two things
 follow:
 
@@ -1544,6 +1550,29 @@ The **concurrent tunnel quota per account is unmeasured**. If it turns out lower
 than the migration memory budget in §14.3, it is the binding limit on how many
 devcontainers this cluster can host, and it belongs in §1.1's ceilings rather
 than here. It is here because nobody has counted.
+
+### 21.10 That §9.1's precondition holds
+
+It does not. §9.1 states that the repository is private and derives from that
+the claim that fork pull requests do not exist --- which is *"the precondition
+that makes T2 on `n1` acceptable"*. The repository is public, so that
+precondition is false, and the section itself says what follows: *"Going public
+would require moving T2 to hosted runners."*
+
+What exists today is a guard rather than a fix: every self-hosted job refuses to
+run for a pull request whose head repository is not this one, so a fork cannot
+schedule its code on the node that holds the registry, the object store, and
+every devcontainer. `CL-07` asserts the guard.
+
+A guard is not the derivation. Two things would restore it, and both are the
+operator's to choose:
+
+- make the repository private again, which is what §9.1 assumes throughout; or
+- move T2 to hosted runners and accept the emulation tax §9.4 rejected, which
+  means rewriting §9.4's runner table and §10.2's tier durations.
+
+Recorded here rather than resolved because it is a decision about what this
+cluster is for, not a defect in what it does.
 
 ### 21.9 That unattended update is risk-free
 
