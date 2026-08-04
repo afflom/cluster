@@ -71,7 +71,13 @@ jobs:
             # throttle.
             pushed=false
             for attempt in 1 2 3 4 5; do
-              if podman push "ghcr.io/${{ github.repository }}/$node:ci-${{ github.sha }}"; then
+              # `--digestfile` records the digest of what the *registry* now
+              # holds. `podman inspect .Digest` gives the local manifest's
+              # digest, which is not the same value and is not resolvable by a
+              # puller --- that mismatch is what made the tiers ask for a
+              # manifest ghcr.io had never heard of.
+              if podman push --digestfile "/tmp/$node.digest" \
+                   "ghcr.io/${{ github.repository }}/$node:ci-${{ github.sha }}"; then
                 pushed=true
                 break
               fi
@@ -85,8 +91,13 @@ jobs:
               echo "::error::$node could not be pushed after 5 attempts." >&2
               exit 1
             fi
-            digest=$(podman inspect --format '{{.Digest}}' \
-              "ghcr.io/${{ github.repository }}/$node:ci-${{ github.sha }}")
+            digest=$(cat "/tmp/$node.digest")
+            # Confirm the registry can actually resolve it before anything
+            # downstream is told to boot it. §9.2 promotes *that digest*, so a
+            # digest nothing can pull is a validation that would silently be
+            # about a different artifact.
+            skopeo inspect --raw \
+              "docker://ghcr.io/${{ github.repository }}/$node@$digest" >/dev/null
             echo "$node=$digest" >> "$GITHUB_OUTPUT"
             # A pause between images. The limit is on the rate, and three
             # back-to-back pushes are what reaches it; this costs a minute and
