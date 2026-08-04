@@ -77,12 +77,18 @@ impl Acceleration {
     /// Loud, and it names the consequence. A skip that reads like a pass is the
     /// vacuous gate `AGENTS.md` warns about wearing a different hat: the run is
     /// green and nothing was tested.
+    /// It names no cause. The caller appends the one it actually found --- an
+    /// earlier version asserted "/dev/kvm is absent" unconditionally, and CI
+    /// reported exactly that while the real problem was a missing firmware
+    /// image. A notice that names a cause it did not check sends the next reader
+    /// to the wrong place, which is the specific harm a loud skip exists to
+    /// avoid.
     pub const SKIP_NOTICE: &'static str = concat!(
-        "SKIPPED: /dev/kvm is absent, so no guest was booted and nothing in this ",
-        "tier was tested. The harness does not fall back to TCG: a tier that ",
-        "quietly emulated would be slower, differently timed, and would look ",
-        "green (SPEC.md §9.4). T2 runs on n1, where KVM is guaranteed, so ",
-        "nothing is promoted on a skipped tier."
+        "SKIPPED: no guest was booted and nothing in this tier was tested. The ",
+        "harness does not fall back to TCG: a tier that quietly emulated would ",
+        "be slower, differently timed, and would look green (SPEC.md §9.4). T2 ",
+        "runs on n1, where KVM is guaranteed, so nothing is promoted on a ",
+        "skipped tier. What was missing:"
     );
 
     /// Whether a guest can actually be booted.
@@ -158,7 +164,13 @@ pub fn mesh_netdevs(cluster: &Cluster, node: &Node) -> Vec<Netdev> {
 /// be testing a boot path no node uses. A user-mode netdev provides management
 /// and outbound, so a guest can reach a registry without the harness needing a
 /// bridge or any privilege at all.
-pub fn qemu_args(cluster: &Cluster, node: &Node, disk: &str, ovmf: &str) -> Vec<String> {
+pub fn qemu_args(
+    cluster: &Cluster,
+    node: &Node,
+    disk: &str,
+    firmware_code: &str,
+    firmware_vars: &str,
+) -> Vec<String> {
     let mut args = vec![
         "-machine".to_string(),
         "q35,accel=kvm".to_string(),
@@ -174,7 +186,13 @@ pub fn qemu_args(cluster: &Cluster, node: &Node, disk: &str, ovmf: &str) -> Vec<
         "-serial".to_string(),
         "mon:stdio".to_string(),
         "-drive".to_string(),
-        format!("if=pflash,format=raw,readonly=on,file={ovmf}"),
+        format!("if=pflash,format=raw,readonly=on,file={firmware_code}"),
+        // A *writable* variable store, one per guest. Without it the firmware
+        // has nowhere to record a boot entry, and a bootc guest that installed
+        // its loader outside the removable fallback path would not come back
+        // after its first reboot --- which §10.4 makes the whole point of T2.
+        "-drive".to_string(),
+        format!("if=pflash,format=raw,file={firmware_vars}"),
         // One base qcow2 with per-node copy-on-write overlays. Hosted runners
         // provide roughly 14 GB free, which does not hold three bootc disk
         // images (§9.4).
@@ -338,9 +356,18 @@ mod tests {
         let c = cluster();
         let mut ssh_ports = Vec::new();
         for node in &c.cluster.node {
-            let args = qemu_args(&c, node, "n.qcow2", "/usr/share/OVMF/OVMF_CODE.fd");
+            let args = qemu_args(&c, node, "n.qcow2", "CODE.fd", "VARS.fd");
             let line = args.join(" ");
             assert!(line.contains("pflash"), "OVMF supplies UEFI (§10.3)");
+            assert!(
+                line.contains("readonly=on,file=CODE.fd"),
+                "the firmware image is read-only"
+            );
+            assert!(
+                line.contains("format=raw,file=VARS.fd"),
+                "the variable store is writable, or the guest cannot record a \
+                 boot entry and does not survive its first reboot (§10.4)"
+            );
             assert!(
                 line.contains("accel=kvm"),
                 "never a silent TCG fallback (§9.4)"

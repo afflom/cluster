@@ -75,9 +75,46 @@ pub struct Fixture {
     pub backing: PathBuf,
     /// Scratch directory for overlays.
     pub scratch: PathBuf,
-    /// OVMF firmware, which supplies UEFI. A BIOS guest would be testing a boot
-    /// path no node uses.
-    pub ovmf: PathBuf,
+    /// The UEFI firmware image. A BIOS guest would be testing a boot path no
+    /// node uses.
+    pub firmware_code: PathBuf,
+    /// The firmware's variable-store template, copied per guest so each has a
+    /// writable one.
+    pub firmware_vars: PathBuf,
+}
+
+/// Where a distribution puts OVMF, in the order they are tried.
+///
+/// Searched rather than assumed. A single hard-coded path meant T1 skipped on
+/// every hosted runner --- reporting, wrongly, that KVM was absent --- when the
+/// only problem was that Ubuntu had moved the file. Each entry is a real
+/// location: the `_4M` pair is current Debian and Ubuntu, the unsuffixed pair is
+/// older Ubuntu, and the `edk2` path is Fedora and RHEL.
+const FIRMWARE_CANDIDATES: &[(&str, &str)] = &[
+    (
+        "/usr/share/OVMF/OVMF_CODE_4M.fd",
+        "/usr/share/OVMF/OVMF_VARS_4M.fd",
+    ),
+    (
+        "/usr/share/OVMF/OVMF_CODE.fd",
+        "/usr/share/OVMF/OVMF_VARS.fd",
+    ),
+    (
+        "/usr/share/edk2/ovmf/OVMF_CODE.fd",
+        "/usr/share/edk2/ovmf/OVMF_VARS.fd",
+    ),
+    (
+        "/usr/share/qemu/edk2-x86_64-code.fd",
+        "/usr/share/qemu/edk2-i386-vars.fd",
+    ),
+];
+
+/// The first firmware pair present on this machine.
+fn discover_firmware() -> Option<(PathBuf, PathBuf)> {
+    FIRMWARE_CANDIDATES.iter().find_map(|(code, vars)| {
+        let (code, vars) = (PathBuf::from(code), PathBuf::from(vars));
+        (code.exists() && vars.exists()).then_some((code, vars))
+    })
 }
 
 impl Fixture {
@@ -91,10 +128,16 @@ impl Fixture {
             scratch: PathBuf::from(
                 std::env::var("CLUSTER_SCRATCH").unwrap_or_else(|_| "target/harness".to_string()),
             ),
-            ovmf: PathBuf::from(
-                std::env::var("CLUSTER_OVMF")
-                    .unwrap_or_else(|_| "/usr/share/OVMF/OVMF_CODE.fd".to_string()),
-            ),
+            firmware_code: std::env::var("CLUSTER_OVMF_CODE")
+                .map(PathBuf::from)
+                .ok()
+                .or_else(|| discover_firmware().map(|(code, _)| code))
+                .unwrap_or_else(|| PathBuf::from("/usr/share/OVMF/OVMF_CODE_4M.fd")),
+            firmware_vars: std::env::var("CLUSTER_OVMF_VARS")
+                .map(PathBuf::from)
+                .ok()
+                .or_else(|| discover_firmware().map(|(_, vars)| vars))
+                .unwrap_or_else(|| PathBuf::from("/usr/share/OVMF/OVMF_VARS_4M.fd")),
         }
     }
 
@@ -109,8 +152,17 @@ impl Fixture {
         if !self.backing.exists() {
             return Some(format!("{} does not exist", self.backing.display()));
         }
-        if !self.ovmf.exists() {
-            return Some(format!("{} does not exist", self.ovmf.display()));
+        for firmware in [&self.firmware_code, &self.firmware_vars] {
+            if !firmware.exists() {
+                return Some(format!(
+                    "{} does not exist; none of {:?} was found either",
+                    firmware.display(),
+                    FIRMWARE_CANDIDATES
+                        .iter()
+                        .map(|(c, _)| *c)
+                        .collect::<Vec<_>>()
+                ));
+            }
         }
         for tool in ["qemu-system-x86_64", "qemu-img", "ssh"] {
             if which(tool).is_none() {
@@ -165,11 +217,19 @@ impl Guest {
             ));
         }
 
+        // A private, writable copy of the variable store. Sharing one between
+        // guests would let the three nodes overwrite each other's boot entries,
+        // and the template itself is usually read-only anyway.
+        let vars = fixture.scratch.join(format!("{}-vars.fd", node.name));
+        std::fs::copy(&fixture.firmware_vars, &vars)
+            .map_err(|e| fail("copy the firmware variable store", e.to_string()))?;
+
         let args = qemu_args(
             cluster,
             node,
             &disk.display().to_string(),
-            &fixture.ovmf.display().to_string(),
+            &fixture.firmware_code.display().to_string(),
+            &vars.display().to_string(),
         );
         let process = Command::new("qemu-system-x86_64")
             .args(&args)

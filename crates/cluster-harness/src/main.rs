@@ -5,9 +5,11 @@
 //! filters by the `tier` column, and refuses to hand a hardware claim to a
 //! simulated run whatever the register says (§19.2).
 //!
-//! When `/dev/kvm` is absent the tier reports an **explicit skip** and exits
-//! non-zero. It never falls back to TCG. A tier that quietly emulated would be
-//! slower, differently timed, and --- worst --- would look green (§9.4).
+//! When the fixture is incomplete --- no `/dev/kvm`, no firmware, no backing
+//! image, a missing tool --- the tier reports an **explicit skip** naming the
+//! part that was missing, and exits non-zero. It never falls back to TCG. A tier
+//! that quietly emulated would be slower, differently timed, and --- worst ---
+//! would look green (§9.4).
 
 use std::process::ExitCode;
 
@@ -72,13 +74,10 @@ fn main() -> ExitCode {
     // tests never skip themselves: a test that reported `ok` having booted
     // nothing is a gate that cannot fail wearing a different hat, and five of
     // them reporting `ok` is worse than one honest non-zero exit.
+    let fixture = Fixture::from_environment();
     if tier != Tier::T3 {
-        if let Some(reason) = Fixture::from_environment().missing() {
-            eprintln!(
-                "{}: {} ({reason})",
-                tier.as_str(),
-                Acceleration::SKIP_NOTICE
-            );
+        if let Some(reason) = fixture.missing() {
+            eprintln!("{}: {} {reason}", tier.as_str(), Acceleration::SKIP_NOTICE);
             return ExitCode::from(NOT_RUN);
         }
     }
@@ -88,7 +87,8 @@ fn main() -> ExitCode {
             &cluster,
             node,
             &format!("{}.qcow2", node.name),
-            "/usr/share/OVMF/OVMF_CODE.fd",
+            &fixture.firmware_code.display().to_string(),
+            &fixture.firmware_vars.display().to_string(),
         );
         println!("{}: qemu-system-x86_64 {}", node.name, args.join(" "));
         if tier == Tier::T1 {

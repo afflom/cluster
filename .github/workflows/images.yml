@@ -169,7 +169,10 @@ jobs:
           exit "$code"
         env:
           CLUSTER_TARGET_DIGEST: ${{ needs.build.outputs.n3 }}
-          CLUSTER_OVMF: /usr/share/OVMF/OVMF_CODE.fd
+          # No firmware path here. The harness searches the places distributions
+          # put OVMF, because pinning one meant T1 skipped on every hosted runner
+          # --- and reported that /dev/kvm was absent when KVM was fine and only
+          # the file had moved.
 
   t2:
     # Three nodes, mesh wired, failover, and a full simulated rollout with drain
