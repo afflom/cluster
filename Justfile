@@ -29,6 +29,13 @@ fmt-check:
 
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
+    # `--all-targets` means every target with `test = true`, so the three tier
+    # tests --- marked `test = false` precisely so `cargo test` cannot pretend
+    # to have booted a guest --- were compiled by nothing. A type error in
+    # `tests/t1.rs` passed the whole gate and surfaced only when a runner tried
+    # to boot something, which is the most expensive place to learn it. Naming
+    # them compiles and lints them; it still never runs them.
+    cargo clippy -p cluster-harness --test t1 --test t2 --test t3 -- -D warnings
 
 test:
     cargo test --workspace

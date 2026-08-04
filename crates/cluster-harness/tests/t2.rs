@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use cluster_harness::guest::{boot_mesh, require_bootable, Fixture, Guest};
 use cluster_model::Cluster;
-use cluster_updater::rollout::{admits, Decision, Observation, PeerReport};
+use cluster_updater::rollout::{admits, Observation, PeerReport};
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

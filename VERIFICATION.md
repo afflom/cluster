@@ -168,7 +168,7 @@ appears in the struct that reads it whether or not anything uses the value, so
 counting that as "read" would make the check pass on a model nothing applies,
 which is the whole condition it exists to find.
 
-## Two gates that were caught being weak
+## Three gates that were caught being weak
 
 **The wildcard-origin plant "passed" for the wrong reason.** Changing
 `allowed_origin` to `*` failed `check-render` --- but only because the committed
@@ -180,6 +180,26 @@ naming the origin.
 That is the second time in this repository a gate has looked green for a reason
 unrelated to what it claims to check, and both times the tell was the same: the
 failure message did not mention the thing being planted.
+
+**The tier tests were compiled by nothing.** `lint` runs `clippy --workspace
+--all-targets`, and `--all-targets` means every target whose manifest says
+`test = true`. The three tier tests say `test = false` --- deliberately, so
+`cargo test` cannot report `ok` for a claim it booted no guest to check --- and
+that same flag took them out of `--all-targets`. They were run by `just t1`,
+`t2`, `t3` and compiled by nothing else, so `tests/t1.rs` returned
+`Some((c, guest))` from a function typed `(Cluster, Guest)` and the entire gate
+passed. It surfaced on a runner that had just spent twenty minutes building a
+disk image, which is the most expensive place in the system to learn about a
+type error.
+
+`lint` now names the three targets explicitly. They compile and they lint; they
+still never run. Naming them found a second defect immediately --- an unused
+import in `tests/t2.rs` --- and a planted `fn _plant() -> u32 { "not a u32" }`
+in `tests/t3.rs` fails the gate and passes again when removed.
+
+The tell was the same one as below: the skip that hid this said `/dev/kvm is
+absent` on a runner where KVM was fine. A gate reporting a cause it never
+measured is a gate reporting nothing.
 
 **Two extractors read prose as code.** `check-wiring` read a doc comment
 containing `` `GET /api/auth/config` `` as a call to an endpoint, and `CW-05`

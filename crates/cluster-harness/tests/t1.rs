@@ -49,7 +49,7 @@ fn boot_one(tier: &str) -> (Cluster, Guest) {
     guest
         .wait_for_ssh(BOOT_TIMEOUT_S)
         .expect("the guest answers");
-    Some((c, guest))
+    (c, guest)
 }
 
 /// `CB-02`: a booted node passes the health predicate.
