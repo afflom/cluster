@@ -26,7 +26,7 @@ pub use cluster::{
 };
 pub use images::{
     Base, ImagesFile, Isolation, Quadlet, QuadletMount, Registries, Runner, Runtime, Signing,
-    Variant,
+    Upstream, Variant,
 };
 pub use network::{Firewall, FirewallRule, Link, LinkAddresses, NetworkFile, Plane, Routing};
 pub use policy::{

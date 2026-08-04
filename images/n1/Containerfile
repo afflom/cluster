@@ -7,9 +7,25 @@ ARG BASE
 FROM ${BASE}
 
 RUN dnf -y install \
-      lvm2 device-mapper-persistent-data nfs-utils restic \
+      lvm2 device-mapper-persistent-data nfs-utils \
       qemu-kvm libvirt-daemon-kvm edk2-ovmf smartmontools \
  && dnf clean all
+
+# restic is not packaged for EL10 --- checked against this base image, not
+# assumed --- and §15.3 names it as the snapshot tool. So it is fetched from its
+# upstream release, pinned by version and verified by digest, which is the same
+# standard `cargo deny` holds everything arriving through cargo to (R6).
+#
+# The version and digest are in model/images.toml; CI-06 asserts this matches.
+RUN curl --silent --show-error --fail --location \
+      "https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_amd64.bz2" \
+      --output /tmp/restic.bz2 \
+ && echo "f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c  /tmp/restic.bz2" \
+      | sha256sum --check --strict \
+ && bunzip2 -c /tmp/restic.bz2 > /usr/bin/restic \
+ && chmod 0755 /usr/bin/restic \
+ && rm -f /tmp/restic.bz2 \
+ && restic version
 
 # podman-compat: podman with the Docker API shim and DOCKER_HOST set. The
 # runtime is a model row rather than a bet in this file, and the build fails

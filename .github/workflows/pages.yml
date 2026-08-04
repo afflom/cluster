@@ -28,9 +28,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: trunk
-      # The target comes before the flag: `--release` takes an optional value,
-      # so `--release <path>` consumes the path as its value and trunk rejects it.
-      - run: trunk build crates/cluster-web/index.html --release
+      # Run from inside the crate. Given a path, trunk resolves the manifest
+      # against the *current* directory's workspace, and this workspace root is
+      # virtual --- it has no root package, so trunk reports it cannot find one.
+      # `--release` also takes an optional value, so it must not precede a path.
+      - run: trunk build --release
+        working-directory: crates/cluster-web
         env:
           CLUSTER_API_BASE: ${{ vars.CLUSTER_API_BASE }}
       - uses: actions/upload-pages-artifact@v3

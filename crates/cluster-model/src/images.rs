@@ -173,6 +173,10 @@ pub struct Variant {
     /// Actions runners this node hosts (§9.5).
     #[serde(default)]
     pub runner: Vec<Runner>,
+    /// Binaries fetched from an upstream release because no repository carries
+    /// them, pinned by version and digest (§8.2).
+    #[serde(default)]
+    pub upstream: Vec<Upstream>,
     /// Devcontainer Features added to every session this node starts (§11.1).
     ///
     /// Added with `--additional-features` rather than written into any
@@ -234,6 +238,37 @@ pub struct QuadletMount {
     /// rendered, never hand-written, because a missing relabel is an AVC denial
     /// at boot and `CB-` treats a denial as a build failure (§8.3).
     pub relabel: String,
+}
+
+/// A binary fetched from an upstream release (§8.2).
+///
+/// The escape hatch for something the model declares that no repository
+/// packages. It is pinned by version *and* digest for the reason the base image
+/// is: a fetch of "latest" would make what a node runs depend on the day it was
+/// built, and for a snapshot tool that would make the archive format of
+/// somebody's held workspace depend on it too.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Upstream {
+    /// The binary's name, as it lands in `/usr/bin`.
+    pub name: String,
+    /// The pinned version.
+    pub version: String,
+    /// Where to fetch it, with `{version}` substituted.
+    pub url: String,
+    /// The digest the fetch is verified against. A download nothing checks is a
+    /// supply chain with no gate on it, which is what R6 exists to prevent for
+    /// everything that arrives through cargo.
+    pub sha256: String,
+    /// How the artifact is compressed, if it is.
+    #[serde(default)]
+    pub compression: String,
+}
+
+impl Upstream {
+    /// The URL with its version substituted.
+    pub fn resolved_url(&self) -> String {
+        self.url.replace("{version}", &self.version)
+    }
 }
 
 /// An Actions runner (§9.5).

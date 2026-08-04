@@ -79,6 +79,7 @@ model does not sanction.
 | --- | --- | --- | --- |
 | `CI-01` | `build` | `T0` | Every Containerfile names its upstream base by the digest model/images.toml declares, exactly one does so, and none names a floating tag. |
 | `CI-05` | `build` | `T0` | The base pin records both the index digest and the distinct manifest digest for the declared architecture, the build targets that platform explicitly, and a scheduled workflow moves the pin, measures its staleness from the recorded date, passes the full gate, and proposes rather than commits. |
+| `CI-06` | `build` | `T0` | Every binary the model declares as fetched from upstream is fetched at the declared version rather than a floating one, and its declared digest is checked rather than merely recorded, with the declared compression unpacked. |
 | `CI-02` | `build` | `T0` | Each variant installs the packages of the runtime it declares, sets DOCKER_HOST to that runtime's socket, installs no package distinctive of the other runtime, and installs every package the model declares for it. |
 | `CI-03` | `build` | `T0` | Each variant copies in the rendered tree of the node it is built for and no other node's, and the base takes its tree from a build argument because the rendered network configuration is per node. |
 | `CI-04` | `build` | `T0` | Every image build runs the bootc container lint, so an image that is not a valid bootc host fails before a tier boots it. |

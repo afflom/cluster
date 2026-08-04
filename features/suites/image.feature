@@ -49,3 +49,11 @@ Feature: image
     And it measures staleness from the recorded date
     And it passes the full gate before proposing the change
     And it opens a pull request rather than committing
+
+  @CI-06 @build
+  Scenario: An upstream binary is pinned and verified
+    Given a binary the model declares as fetched from upstream
+    When the variant's build is read
+    Then it fetches the declared version rather than a floating one
+    And it checks the declared digest rather than merely recording it
+    And it unpacks the declared compression

@@ -277,6 +277,17 @@ passes the full gate, and proposes rather than commits.
 """
 
 [[id]]
+id = "CI-06"
+level = "build"
+suite = "image"
+tier = "T0"
+statement = """
+Every binary the model declares as fetched from upstream is fetched at the
+declared version rather than a floating one, and its declared digest is checked
+rather than merely recorded, with the declared compression unpacked.
+"""
+
+[[id]]
 id = "CI-02"
 level = "build"
 suite = "image"

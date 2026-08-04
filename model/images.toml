@@ -168,12 +168,12 @@ packages = [
   "lvm2",
   "device-mapper-persistent-data",
   "nfs-utils",
-  "restic",
   "qemu-kvm",
   "libvirt-daemon-kvm",
   "edk2-ovmf",
   "smartmontools",
 ]
+
 # cluster-ctl is a native unit, not a Quadlet: §16.1 calls it "an axum service
 # on n1", the binary is already in this image, and wrapping a binary the image
 # ships in a container that has to be pulled from a registry the same node hosts
@@ -185,6 +185,20 @@ services = [
   "cluster-ctl.service",
 ]
 kargs = []
+# restic is not packaged for EL10 --- verified against the base image rather
+# than assumed --- so it is fetched from its upstream release and pinned by
+# checksum. §15.3 names it as the snapshot tool, and a build that silently
+# substituted another one would leave the model saying something untrue.
+#
+# The version and the digest are model facts for the same reason the base image
+# digest is: a fetch of "latest" would make the archive format of somebody's
+# held workspace depend on the day the image was built.
+[[variant.upstream]]
+name = "restic"
+version = "0.19.1"
+url = "https://github.com/restic/restic/releases/download/v{version}/restic_{version}_linux_amd64.bz2"
+sha256 = "f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c"
+compression = "bz2"
 
 [[variant.quadlet]]
 name = "zot"

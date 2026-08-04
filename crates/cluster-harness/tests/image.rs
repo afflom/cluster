@@ -662,3 +662,79 @@ fn nothing_is_promoted_on_a_tier_that_did_not_run_cl_06() {
          gate in its most convincing disguise (§9.4)"
     );
 }
+
+/// `CI-06`: an upstream binary is pinned by version and verified by digest.
+///
+/// The escape hatch for something the model declares that no repository
+/// packages --- `restic` on EL10, checked against the base image rather than
+/// assumed. It is held to the standard `cargo deny` holds everything arriving
+/// through cargo to (R6): a download nothing verifies is a supply chain with no
+/// gate on it.
+#[test]
+fn every_upstream_binary_is_pinned_and_verified_ci_06() {
+    let c = model();
+    let files = containerfiles(&root());
+    let mut checked = 0usize;
+
+    for variant in &c.images.variant {
+        let Some(file) = files.iter().find(|f| f.name == variant.id) else {
+            continue;
+        };
+        for upstream in &variant.upstream {
+            // Fetched at the declared version, not at a floating "latest": what
+            // a node runs must not depend on the day it was built, and for a
+            // snapshot tool that would make the archive format of a held
+            // workspace depend on it too.
+            let url = upstream.resolved_url();
+            assert!(
+                file.issues(&url),
+                "{}: the model pins {} {} at {url} and the build does not fetch it",
+                variant.id,
+                upstream.name,
+                upstream.version
+            );
+            assert!(
+                !url.contains("{version}") && !url.contains("latest"),
+                "{}: {} must be pinned, not floating",
+                variant.id,
+                upstream.name
+            );
+
+            // And verified. This is the assertion that matters: a fetch with no
+            // checksum is the one place this repository would accept a binary
+            // on trust.
+            assert!(
+                file.issues(&upstream.sha256),
+                "{}: {} is fetched without its declared digest being checked",
+                variant.id,
+                upstream.name
+            );
+            assert!(
+                file.issues("sha256sum --check"),
+                "{}: the digest must be *checked*, not merely present",
+                variant.id
+            );
+            assert_eq!(
+                upstream.sha256.len(),
+                64,
+                "{}: {} has a digest that is not a sha256",
+                variant.id,
+                upstream.name
+            );
+
+            // The compression the model declares is the one the build unpacks.
+            match upstream.compression.as_str() {
+                "bz2" => assert!(file.issues("bunzip2"), "{}: bz2", variant.id),
+                "gz" => assert!(file.issues("gunzip") || file.issues("tar -xz")),
+                "" => {}
+                other => panic!("{}: unknown compression `{other}`", variant.id),
+            }
+            checked += 1;
+        }
+    }
+
+    assert!(
+        checked > 0,
+        "the model declares an upstream binary, or this test checks nothing"
+    );
+}
