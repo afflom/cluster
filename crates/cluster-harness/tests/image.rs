@@ -269,6 +269,32 @@ fn the_signature_policy_binds_the_promote_workflow_cl_01() {
             );
         }
 
+        // The local store is accepted, and the registry path is not. This is the
+        // pair that matters: `bootc install` reads from `containers-storage` and
+        // is refused without the first, and the second is the entire protection
+        // §12.3 describes. A test that checked only that the policy parses would
+        // pass with both set to accept anything.
+        let storage = &document["transports"]["containers-storage"][""][0]["type"];
+        assert_eq!(
+            storage, "insecureAcceptAnything",
+            "{}: the installer reads from local storage and is refused without \
+             this (§12.1)",
+            node.name
+        );
+        assert_eq!(
+            requirement["type"], "sigstoreSigned",
+            "{}: the registry path must stay signed --- accepting it would make \
+             the local-store rule a loophole instead of a necessity (§12.3)",
+            node.name
+        );
+        assert!(
+            document["transports"]["docker"]
+                .as_object()
+                .is_some_and(|d| d.len() == 1),
+            "{}: exactly one repository is admitted from a registry",
+            node.name
+        );
+
         // The transparency log is declared, and it belongs where signatures are
         // made rather than where they are verified: the policy format has no
         // field for a URL, and putting one there made the image undeployable.

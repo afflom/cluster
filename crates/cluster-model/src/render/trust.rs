@@ -38,6 +38,7 @@ fn policy(c: &Cluster, node: &Node) -> Rendered {
     // decoration --- the same failure §4.4's default-drop exists to avoid.
     body.push_str("  \"default\": [{ \"type\": \"reject\" }],\n");
     body.push_str("  \"transports\": {\n");
+    // The registry path: default-reject, one signed identity.
     body.push_str("    \"docker\": {\n");
     body.push_str(&format!("      \"{repository}\": [\n"));
     body.push_str("        {\n");
@@ -58,6 +59,24 @@ fn policy(c: &Cluster, node: &Node) -> Rendered {
     body.push_str("          \"signedIdentity\": { \"type\": \"matchRepository\" }\n");
     body.push_str("        }\n");
     body.push_str("      ]\n");
+    body.push_str("    },\n");
+
+    // The node's own local store, accepted.
+    //
+    // This is not a loophole, and it is worth being exact about why. §12.3 is
+    // about what a node **stages from a registry**: that path is the `docker`
+    // transport above, and it stays default-reject with one signed identity.
+    // `containers-storage` is what is already on this machine, and anything
+    // there arrived either through that strict path or from the installer ---
+    // whose medium is anchored by the checksum §12.1 publishes and calls the
+    // root of trust.
+    //
+    // Without this, `bootc install` cannot read the image it was told to
+    // install: the installer works from local storage, the local copy carries no
+    // signature, and the deployment is refused. That failure is real and was
+    // observed --- "is rejected by policy" from bootc-image-builder.
+    body.push_str("    \"containers-storage\": {\n");
+    body.push_str("      \"\": [{ \"type\": \"insecureAcceptAnything\" }]\n");
     body.push_str("    }\n");
     body.push_str("  }\n");
     body.push_str("}\n");

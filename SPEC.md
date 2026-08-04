@@ -792,6 +792,15 @@ This is what makes §13's unattended update safe to run: the node applies whatev
 arbitrary image. §12.1's checksum breaks the resulting chicken-and-egg at
 install.
 
+**The policy governs the registry path, and says so explicitly.** Its default is
+reject, one repository is admitted over the `docker` transport under the identity
+above, and the node's own `containers-storage` is accepted. The last is not a
+loophole: what is already in local storage arrived either through that strict
+path or from the installer, whose medium is anchored by §12.1's checksum. Without
+it `bootc install` cannot read the image it was told to install --- the installer
+works from local storage and the local copy carries no signature --- and the
+deployment is refused outright.
+
 ---
 
 ## 13. Unattended rolling update
