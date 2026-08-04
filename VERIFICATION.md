@@ -29,7 +29,7 @@ thirty-five minutes and T3 needs the real fleet (`SPEC.md` §10.2).
 | --- | --- | --- | --- |
 | `just vv` | T0 | anywhere | claims registered at `T0` |
 | `just t1` | T1 | GitHub-hosted, KVM permitting | claims registered at `T1` |
-| `just t2` | T2 | self-hosted on `n1` | claims registered at `T2` |
+| `just t2` | T2 | self-hosted on the storage node | claims registered at `T2` |
 | `just t3` | T3 | the real fleet | claims registered at `T3` |
 
 The tier a claim is discharged at is a **model fact**: `model/ids.toml` carries a
@@ -51,9 +51,36 @@ convincing disguise. The decision now lives in one place, the driver, and no tes
 skips. `just t1` names the five claims it would have discharged and says nothing
 was tested.
 
-T1 may skip and the workflow records it as a skip. T2 may not: on `n1` KVM is
-guaranteed, so its absence means the node is broken rather than the harness being
-portable, and treating that as a skip would let a broken CI host promote images.
+T1 may skip and the workflow records it as a skip. T2 may not: on the storage
+node KVM is guaranteed, so its absence means the node is broken rather than the
+harness being portable, and treating that as a skip would let a broken CI host
+promote images.
+
+## What changed when identity stopped being declared
+
+`SPEC.md` §2.3 and §3.1 were rewritten so that a machine works out its own place
+rather than being told it. Four things that had been true stopped being true, and
+each of them was a test that had to be rewritten rather than repaired.
+
+`CD-01` asserted that every rendered `.network` file matched on `MACAddress=`.
+There are no MACs now; it asserts instead that **no** rendered artifact carries
+one, and that the thresholds a machine sorts its own ports with are rendered.
+
+`CD-06` asserted that `isolcpus=` appeared in exactly one node's `kargs.d`. One
+image reaches all three machines, so an isolation argument there would isolate
+the storage node's cores too; it now asserts that the base carries none and that
+exactly one *role* does.
+
+`CI-03` asserted that each variant copied its own node's tree and no other's. The
+failure it guarded --- a variant carrying another node's addresses --- is
+unreachable with one tree, so it asserts that it stayed unreachable: no build
+references a per-machine tree, because there is no such thing to reference.
+
+`CH-02` asserted that every declared MAC was present on the card the model named.
+That is the one check this change genuinely gives up, and §21.12 records it. What
+replaced it is what real hardware can still establish: the chassis presents the
+port counts §2.1 declares, and every peer loopback is reachable --- which is only
+true if each cable runs to the machine the addressing assumed.
 
 ## Every gate is falsifiable
 
@@ -73,7 +100,7 @@ here.
 | `check-render` (R1) | a signing identity with no workflow, and one naming only the repository | yes, both |
 | `check-model` (§19.2) | a `CH-` claim registered below `T3` | yes |
 | `CI-01` | a Containerfile floating its base tag | yes |
-| `CI-03` | a variant copying another node's rendered tree | yes |
+| `CI-03` | a build copying a per-machine tree | yes |
 | `CL-03` | promotion copying to `:stable` without signing | yes |
 | the honesty meta-gate (R2) | an ID with no test | yes |
 | the meta-gate's `CG-` class rule | a reclamation scenario with no dirty-workspace case | yes, twice |
@@ -86,6 +113,7 @@ here.
 | `check-wiring` (R1) | a wildcard cross-origin, and a zero token-cache TTL | yes, both, citing §16.3 and §16.2 |
 | `CC-01` | an allowlist that admits everyone when empty | yes |
 | `CW-05` | the tunnel Feature omitting the supervisor or baking the server | yes |
+| `CI-07` | a world-writable `policy.json` in the rendered tree | yes, naming the file and the mode |
 
 **One plant did not fire, and that was the finding.** `CL-01` asserted the
 rendered policy's certificate identity "contains the workflow" --- and
@@ -181,6 +209,43 @@ That is the second time in this repository a gate has looked green for a reason
 unrelated to what it claims to check, and both times the tell was the same: the
 failure message did not mention the thing being planted.
 
+**The image shipped a world-writable signature policy, and nothing failed.**
+`COPY` preserves the mode of the file on the build host. `just render` used
+`std::fs::write`, which takes the umask, and a permissive one produced a `0666`
+tree that the build copied straight through. systemd noticed --- "Configuration
+file /usr/lib/systemd/system/cluster-init.service is marked world-writable.
+Proceeding anyway" --- and proceeded, which is the whole problem: the warning was
+in the build log of an image that then passed `bootc container lint` and every
+gate here.
+
+The file that matters is `policy.json`. §12.3 calls it the only thing between an
+unattended node and an arbitrary image, and any local user could have rewritten
+it. The renderer now sets `0644` explicitly and the build runs `chmod -R go-w`
+over everything it copied; `CI-07` asserts both, and the plant fires naming the
+file and the mode.
+
+Found by looking at the built image rather than by any gate, which is the third
+time in this repository that has been the finding. A gate reads what it was told
+to read.
+
+**A literal search read a doc comment as a value.** `CD-17` asserts that no
+model fact is hard-coded in the binary that reads it, by searching
+`cluster-init`'s source for the rendered thresholds. It fired on
+`links.rs`, which explains in a doc comment that `ethtool` reports
+`10000baseT/Full` --- documentation of a format, not a value anything uses. The
+search now drops comment lines and `#[cfg(test)]` modules.
+
+That is the third time an extractor here has read prose as code, and the tell has
+been identical every time: what it objected to was a sentence *about* the thing
+rather than the thing. It is recorded again because three occurrences is a
+pattern rather than an accident --- any gate that greps source will meet it.
+
+**A test hung the suite instead of failing it.** `generate_secret` read
+`/dev/urandom` with `std::fs::read`, which reads to EOF, and `/dev/urandom` has
+none. The suite did not fail; it was killed, and a `SIGTERM` with no assertion
+attached is the least informative way a defect can present. `read_exact` of a
+fixed length fixed it.
+
 **The tier tests were compiled by nothing.** `lint` runs `clippy --workspace
 --all-targets`, and `--all-targets` means every target whose manifest says
 `test = true`. The three tier tests say `test = false` --- deliberately, so
@@ -219,7 +284,7 @@ give a claim two sources, which is what R1 forbids. `SPEC.md` §20 records what 
 cited; §21 records what is deliberately not claimed at all.
 
 What may be claimed here is what is built here, and `SPEC.md` §21 is the standing
-list of what that excludes: that `n3` yields stable measurements, that the
+list of what that excludes: that the testbed yields stable measurements, that the
 hardware is as declared without a real node to ask, that a dependency behaves as
 documented, that one copy of `lv_data` is enough, and that unattended update is
 risk-free.

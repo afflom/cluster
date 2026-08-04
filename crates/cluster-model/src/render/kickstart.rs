@@ -39,7 +39,7 @@ pub(crate) fn render(c: &Cluster) -> Rendered {
         .expect("the model check requires exactly one self-detected role");
     let threshold = c.cluster.detection.bulk_disk_min_gb;
 
-    body.push_str(&format!(
+    body.push_str(
         "# The kickstart every machine is installed from. One image means one\n\
          # installer and nothing to select at install time (§8.4, §12.1).\n\
          #\n\
@@ -49,8 +49,8 @@ pub(crate) fn render(c: &Cluster) -> Rendered {
          #\n\
          # The ISO's SHA-256 is published in the release and verified out of band.\n\
          # That checksum is the root of trust: §12.3's signature policy ships inside\n\
-         # the image, so the first install cannot verify itself (§12.1).\n\n"
-    ));
+         # the image, so the first install cannot verify itself (§12.1).\n\n",
+    );
 
     body.push_str("text\n");
     body.push_str("firstboot --disable\n");
@@ -86,6 +86,25 @@ pub(crate) fn render(c: &Cluster) -> Rendered {
     let devices = &storage_role.devices;
     let vg = devices.volume_group.as_deref().unwrap_or("vg_data");
     let lv = devices.origin_lv.as_deref().unwrap_or("lv_data");
+    let cache = devices.cache_device.as_deref().unwrap_or("sata-ssd");
+
+    // What each role expects its second device to be. The installer cannot tell
+    // compute from testbed --- that is the registrar's decision, taken later over
+    // a network that does not exist during Anaconda --- so the model check
+    // requires every assigned role to name the same device, and this states which
+    // one they agreed on rather than leaving the reader to check three tables.
+    let local: Vec<String> = c
+        .cluster
+        .assigned_roles()
+        .iter()
+        .filter_map(|role| {
+            let d = &role.devices;
+            d.container_graph_device
+                .as_deref()
+                .or(d.bench_device.as_deref())
+                .map(|device| format!("{}: {device}", role.id))
+        })
+        .collect();
 
     body.push_str(&format!(
         "# Secondary storage, decided here rather than chosen by an operator.\n\
@@ -96,7 +115,8 @@ pub(crate) fn render(c: &Cluster) -> Rendered {
          # that does not exist yet during Anaconda --- so this prepares bulk storage\n\
          # where it finds bulk storage and a plain filesystem where it does not.\n\
          #\n\
-         # The data volume is a spinning origin under a **writethrough** dm-cache.\n\
+         # The data volume is a spinning origin under a **writethrough** dm-cache on\n\
+         # the {cache}.\n\
          # Writeback would be faster on write and would make a single non-redundant\n\
          # SSD a data-loss mode for the whole origin. Writethrough adds no failure\n\
          # mode, and it is what makes §2.5's tolerance of hard power loss true ---\n\
@@ -110,13 +130,15 @@ pub(crate) fn render(c: &Cluster) -> Rendered {
     body.push_str("set -eu\n\n");
     body.push_str("root_disk=$(lsblk --noheadings --output PKNAME --paths \"$(findmnt --noheadings --output SOURCE /)\" | head -1)\n");
     body.push_str(&format!(
-        "min_bytes=$(( {threshold} * 1000 * 1000 * 1000 ))\n"
+        "min_bytes=$(( {threshold} * 1000 * 1000 * 1000 ))\n",
     ));
     body.push_str("bulk=\"\"\ncache=\"\"\n");
     body.push_str("for dev in $(lsblk --noheadings --nodeps --output PATH); do\n");
     body.push_str("  [ \"$dev\" = \"$root_disk\" ] && continue\n");
     body.push_str("  size=$(blockdev --getsize64 \"$dev\")\n");
-    body.push_str("  if [ \"$size\" -ge \"$min_bytes\" ]; then bulk=\"$dev\"; else cache=\"$dev\"; fi\n");
+    body.push_str(
+        "  if [ \"$size\" -ge \"$min_bytes\" ]; then bulk=\"$dev\"; else cache=\"$dev\"; fi\n",
+    );
     body.push_str("done\n\n");
     body.push_str("if [ -n \"$bulk\" ] && [ -n \"$cache\" ]; then\n");
     body.push_str(&format!("  vgcreate {vg} \"$bulk\"\n"));
@@ -134,10 +156,14 @@ pub(crate) fn render(c: &Cluster) -> Rendered {
     body.push_str(&format!("  mkfs.xfs /dev/{vg}/{lv}\n"));
     body.push_str("elif [ -n \"$cache\" ]; then\n");
     body.push_str("  # No bulk device: this machine will be assigned compute or testbed, and\n");
-    body.push_str("  # either way its second device carries local state. overlay2 and\n");
+    body.push_str(&format!(
+        "  # either way its second device carries local state ({}). overlay2 and\n",
+        local.join(", ")
+    ));
     body.push_str("  # podman's overlay driver do not function on NFS, which is why the\n");
     body.push_str("  # container graph is local on every node and NFS carries data only\n");
-    body.push_str("  # (§11.2).\n");
+    body.push_str("  # (§11.2). The two roles name the same device, and the model check\n");
+    body.push_str("  # requires that: the installer cannot tell them apart.\n");
     body.push_str("  mkfs.xfs \"$cache\"\n");
     body.push_str("fi\n");
     body.push_str("%end\n\n");

@@ -20,6 +20,7 @@
 //! about, passing green over content it never reads.
 
 use std::collections::BTreeSet;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use cluster_model::render::{ASSERTED_BY, GENERATED_MARKER};
@@ -56,7 +57,7 @@ pub fn check_render(root: &Path, write: bool) -> Result<(), Fail> {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&path, file.contents())?;
+            write_mode(&path, &file.contents())?;
         }
         println!(
             "render: wrote {} files under {}",
@@ -184,6 +185,35 @@ pub fn check_render(root: &Path, write: bool) -> Result<(), Fail> {
         files.len(),
         asserted.len()
     );
+    Ok(())
+}
+
+/// Write a rendered file with an explicit mode.
+///
+/// `0644`, set on the file that is created rather than inherited from whatever
+/// umask the render ran under. A developer with a permissive umask rendered the
+/// whole tree `0666`, the build copied the modes through, and the image shipped a
+/// world-writable `policy.json` --- the one file §12.3 calls the only thing
+/// between an unattended node and an arbitrary image. systemd said so about the
+/// units beside it ("marked world-writable, proceeding anyway") and nothing
+/// failed.
+///
+/// The image build chmods these too. Two places, deliberately: this one keeps the
+/// committed tree right, and that one keeps it right whatever wrote it.
+fn write_mode(path: &Path, contents: &str) -> Result<(), Fail> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o644)
+        .open(path)?;
+    file.write_all(contents.as_bytes())?;
+    // `mode` only applies at creation, so an existing file keeps whatever it
+    // had --- which is exactly the case that produced the 0666 tree.
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))?;
     Ok(())
 }
 

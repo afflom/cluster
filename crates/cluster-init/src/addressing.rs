@@ -73,9 +73,7 @@ impl Addressing {
     /// The loopback of an ordinal.
     pub fn loopback_of(&self, ordinal: u32) -> Result<Ipv4Addr, InitError> {
         self.check(ordinal)?;
-        Ok(Ipv4Addr::from(
-            u32::from(self.loopback_base) + ordinal,
-        ))
+        Ok(Ipv4Addr::from(u32::from(self.loopback_base) + ordinal))
     }
 
     /// The link joining two ordinals, in either order.

@@ -26,3 +26,19 @@ Feature: network
     When its ruleset is read
     Then the input chain's policy is drop
     And every flow the model declares for that node is present
+
+  @CN-04 @build
+  Scenario: Both ends of a cable agree without being told
+    Given three nodes wired as a direct triangle
+    When each node discovers the peer on each of its mesh ports
+    Then each port is addressed from the ordinal pair the cable joins
+    And the two ends of every cable hold the two addresses of one /31
+    And neither end was told which of the two to take
+
+  @CN-05 @build
+  Scenario: Ordinals are handed out in arrival order and reused after release
+    Given a registrar and two machines holding no bulk disk
+    When each registers in turn
+    Then the first is assigned compute and the second testbed
+    And a machine that registers twice receives the same assignment
+    And a released ordinal is handed to the next machine rather than a fresh one

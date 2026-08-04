@@ -175,9 +175,7 @@ fn container_unit(c: &Cluster, quadlet: &crate::Quadlet, role: Option<&Role>) ->
     let mut body = String::new();
     body.push_str(&format!("# {}\n", quadlet.description));
     match role {
-        None => body.push_str(
-            "#\n# Every role runs this one, so it carries no condition.\n\n",
-        ),
+        None => body.push_str("#\n# Every role runs this one, so it carries no condition.\n\n"),
         Some(r) => body.push_str(&format!(
             "#\n\
              # Ships on all three machines and starts on the one holding `{}`. A unit\n\

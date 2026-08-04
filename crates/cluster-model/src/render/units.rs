@@ -101,7 +101,10 @@ fn control_plane_service(c: &Cluster, role: &Role) -> Rendered {
             "Description=Cluster control plane".to_string(),
             "After=network-online.target var-lib-cluster\\x2dctl.mount".to_string(),
             "Wants=network-online.target".to_string(),
-            format!("ConditionPathExists={}", crate::render::quadlet::role_marker(&role.id)),
+            format!(
+                "ConditionPathExists={}",
+                crate::render::quadlet::role_marker(&role.id)
+            ),
         ],
     ));
 
@@ -249,7 +252,10 @@ fn agent_service(c: &Cluster, role: &Role) -> Rendered {
             "Description=Devcontainer agent".to_string(),
             "After=network-online.target remote-fs.target".to_string(),
             "Wants=network-online.target".to_string(),
-            format!("ConditionPathExists={}", crate::render::quadlet::role_marker(&role.id)),
+            format!(
+                "ConditionPathExists={}",
+                crate::render::quadlet::role_marker(&role.id)
+            ),
         ],
     ));
     body.push_str(&section(
@@ -675,11 +681,7 @@ fn gc_service(c: &Cluster) -> Rendered {
     service.push("ExecStart=/usr/libexec/cluster/zot-gc".to_string());
     body.push_str(&section("Service", &service));
 
-    Rendered::new(
-        node_path("systemd/cluster-gc.service"),
-        vec!["CD-08"],
-        body,
-    )
+    Rendered::new(node_path("systemd/cluster-gc.service"), vec!["CD-08"], body)
 }
 
 fn gc_timer(c: &Cluster) -> Rendered {
@@ -700,11 +702,7 @@ fn gc_timer(c: &Cluster) -> Rendered {
         ],
     ));
     body.push_str(&section("Install", &["WantedBy=timers.target".to_string()]));
-    Rendered::new(
-        node_path("systemd/cluster-gc.timer"),
-        vec!["CD-08"],
-        body,
-    )
+    Rendered::new(node_path("systemd/cluster-gc.timer"), vec!["CD-08"], body)
 }
 
 fn reclaim_service(c: &Cluster, role: &Role) -> Rendered {
@@ -725,7 +723,10 @@ fn reclaim_service(c: &Cluster, role: &Role) -> Rendered {
             // Reclamation and drain are separate mechanisms with separate
             // triggers, and reclamation never runs during a rollout (§15.4).
             "Conflicts=cluster-updater.service".to_string(),
-            format!("ConditionPathExists={}", crate::render::quadlet::role_marker(&role.id)),
+            format!(
+                "ConditionPathExists={}",
+                crate::render::quadlet::role_marker(&role.id)
+            ),
         ],
     ));
     body.push_str(&section(

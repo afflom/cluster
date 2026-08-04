@@ -224,12 +224,49 @@ impl Guest {
         std::fs::copy(&fixture.firmware_vars, &vars)
             .map_err(|e| fail("copy the firmware variable store", e.to_string()))?;
 
+        // The bulk device, on the guest that should discover itself as the
+        // storage node (§2.3.1). Sparse: qcow2 allocates as it is written, so a
+        // device above the threshold costs kilobytes until something uses it,
+        // which matters on a runner with 14 GB free (§9.4).
+        let bulk = if node.role
+            == cluster
+                .cluster
+                .self_detected_role()
+                .map(|r| r.id.as_str())
+                .unwrap_or_default()
+        {
+            let path = fixture.scratch.join(format!("{}-bulk.qcow2", node.name));
+            if !path.exists() {
+                let gb = cluster.cluster.detection.bulk_disk_min_gb + 1;
+                let made = Command::new("qemu-img")
+                    .args([
+                        "create",
+                        "-f",
+                        "qcow2",
+                        &path.display().to_string(),
+                        &format!("{gb}G"),
+                    ])
+                    .output()
+                    .map_err(|e| fail("qemu-img create (bulk)", e.to_string()))?;
+                if !made.status.success() {
+                    return Err(fail(
+                        "qemu-img create (bulk)",
+                        String::from_utf8_lossy(&made.stderr).trim().to_string(),
+                    ));
+                }
+            }
+            Some(path.display().to_string())
+        } else {
+            None
+        };
+
         let args = qemu_args(
             cluster,
             node,
             &disk.display().to_string(),
             &fixture.firmware_code.display().to_string(),
             &vars.display().to_string(),
+            bulk.as_deref(),
         );
         let process = Command::new("qemu-system-x86_64")
             .args(&args)

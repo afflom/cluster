@@ -67,7 +67,7 @@ jobs:
           sed -i "s|^resolved_on = \".*\"|resolved_on = \"${{ steps.upstream.outputs.today }}\"|" model/images.toml
           # The Containerfile carries the pin too, and CI-01 asserts the two
           # agree --- so the bump has to move both or its own gate stops it.
-          sed -i "s|@sha256:[0-9a-f]\{64\}|@${{ steps.upstream.outputs.index }}|" images/base/Containerfile
+          sed -i "s|@sha256:[0-9a-f]\{64\}|@${{ steps.upstream.outputs.index }}|" images/node/Containerfile
           cargo run -q -p xtask -- render
           cargo run -q -p xtask -- check-model --write
 

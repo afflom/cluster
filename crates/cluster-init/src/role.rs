@@ -118,15 +118,13 @@ impl Registry {
             })?;
         // The role follows the ordinal, not the order of arrival among those
         // still present. That is what makes a replacement a replacement.
-        let role = order
-            .get((ordinal - first_free) as usize)
-            .ok_or_else(|| {
-                InitError::Registry(format!(
-                    "ordinal {ordinal} has no role in the hand-out order, which lists {} \
+        let role = order.get((ordinal - first_free) as usize).ok_or_else(|| {
+            InitError::Registry(format!(
+                "ordinal {ordinal} has no role in the hand-out order, which lists {} \
                      (§2.3.2)",
-                    order.len()
-                ))
-            })?;
+                order.len()
+            ))
+        })?;
         let assignment = Assignment {
             ordinal,
             role: role.clone(),
@@ -242,7 +240,9 @@ mod tests {
         let mut r = Registry::default();
         r.register("aaa", &order(), 2, 3).unwrap();
         r.register("bbb", &order(), 2, 3).unwrap();
-        let err = r.register("ccc", &order(), 2, 3).expect_err("the fleet is full");
+        let err = r
+            .register("ccc", &order(), 2, 3)
+            .expect_err("the fleet is full");
         assert!(format!("{err}").contains("Releasing one is explicit"));
     }
 

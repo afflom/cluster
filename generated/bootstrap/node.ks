@@ -38,7 +38,8 @@ part / --fstype=xfs --grow
 # that does not exist yet during Anaconda --- so this prepares bulk storage
 # where it finds bulk storage and a plain filesystem where it does not.
 #
-# The data volume is a spinning origin under a **writethrough** dm-cache.
+# The data volume is a spinning origin under a **writethrough** dm-cache on
+# the sata-ssd.
 # Writeback would be faster on write and would make a single non-redundant
 # SSD a data-loss mode for the whole origin. Writethrough adds no failure
 # mode, and it is what makes §2.5's tolerance of hard power loss true ---
@@ -70,10 +71,11 @@ if [ -n "$bulk" ] && [ -n "$cache" ]; then
   mkfs.xfs /dev/vg_data/lv_data
 elif [ -n "$cache" ]; then
   # No bulk device: this machine will be assigned compute or testbed, and
-  # either way its second device carries local state. overlay2 and
+  # either way its second device carries local state (compute: sata-ssd, testbed: sata-ssd). overlay2 and
   # podman's overlay driver do not function on NFS, which is why the
   # container graph is local on every node and NFS carries data only
-  # (§11.2).
+  # (§11.2). The two roles name the same device, and the model check
+  # requires that: the installer cannot tell them apart.
   mkfs.xfs "$cache"
 fi
 %end

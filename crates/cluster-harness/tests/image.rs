@@ -89,16 +89,22 @@ fn each_variant_installs_its_declared_runtime_ci_02() {
     let c = model();
     let files = containerfiles(&root());
 
-    for variant in &c.images.variant {
-        let file = files
-            .iter()
-            .find(|f| f.name == variant.id)
-            .unwrap_or_else(|| panic!("variant {} has no Containerfile", variant.id));
-        let runtime = c
-            .images
-            .runtime_of(variant)
-            .expect("the model check requires a declared runtime");
-        let installed = installed_packages(file);
+    // One image, so one Containerfile and one runtime in it. It was one file per
+    // variant when there were three images; a single image that installed two
+    // runtimes would be making §8.2's choice twice and shipping both answers.
+    let file = files
+        .iter()
+        .find(|f| f.name == cluster_model::render::NODE_DIR)
+        .expect("images/node/Containerfile is the one image (§8.4)");
+    assert_eq!(files.len(), 1, "there is one image (§8.4)");
+    let installed = installed_packages(file);
+
+    let runtime = c
+        .images
+        .runtime(&c.images.default_runtime)
+        .expect("the model check requires a declared runtime");
+    {
+        let variant = &c.images.variant[0];
 
         for package in &runtime.packages {
             assert!(
@@ -133,11 +139,18 @@ fn each_variant_installs_its_declared_runtime_ci_02() {
             variant.id
         );
 
-        // Every package the model declares for the variant is installed.
+        let _ = variant;
+    }
+
+    // Every role's packages, because every role's units ship (§8.4). A machine
+    // carries QEMU and lvm2 whether or not it runs them; §21.14 records that
+    // trade rather than pretending it is free.
+    for variant in &c.images.variant {
         for package in &variant.packages {
             assert!(
                 installed.contains(package),
-                "{}: the model declares `{package}` and the build does not install it",
+                "the `{}` role declares `{package}` and the one image does not install it \
+                 (§8.4)",
                 variant.id
             );
         }
@@ -411,12 +424,13 @@ fn the_promoted_digest_is_the_validated_one_cl_03() {
         "a digest nothing can pull would make the tier a validation of some \
          other artifact, identical in every log until an install failed"
     );
-    for node in ["n1", "n2", "n3"] {
-        assert!(
-            images.does(&format!("{node}: ${{{{ steps.push.outputs.{node} }}}}")),
-            "images.yml must publish {node}'s digest"
-        );
-    }
+    // One image (§8.4), so one digest to publish. There were three, and every
+    // promotion was three chances for two of them to end up at different digests
+    // behind one release note.
+    assert!(
+        images.does("node: ${{ steps.push.outputs.node }}"),
+        "images.yml must publish the built digest"
+    );
 
     // Promotion resolves the tag to a commit and copies the digest built from
     // it. It never builds.
@@ -768,10 +782,13 @@ fn every_upstream_binary_is_pinned_and_verified_ci_06() {
     let files = containerfiles(&root());
     let mut checked = 0usize;
 
+    // The one image fetches every role's upstream binary, because every role's
+    // packages are in it (§8.4).
+    let file = files
+        .iter()
+        .find(|f| f.name == cluster_model::render::NODE_DIR)
+        .expect("images/node/Containerfile is the one image (§8.4)");
     for variant in &c.images.variant {
-        let Some(file) = files.iter().find(|f| f.name == variant.id) else {
-            continue;
-        };
         for upstream in &variant.upstream {
             // Fetched at the declared version, not at a floating "latest": what
             // a node runs must not depend on the day it was built, and for a
@@ -872,5 +889,65 @@ fn no_fork_runs_on_a_self_hosted_runner_cl_07() {
         guarded >= 3,
         "expected the image, pages and smoke workflows to schedule self-hosted \
          work; found {guarded}"
+    );
+}
+
+/// `CI-07`: nothing the rendered tree contributes is writable by anyone but root.
+///
+/// `COPY` preserves the mode of the file on the build host. A developer with a
+/// permissive umask rendered the whole tree `0666`, the build copied the modes
+/// through, and the image shipped a world-writable `policy.json` --- the one file
+/// §12.3 calls the only thing between an unattended node and an arbitrary image.
+/// systemd said so about the units beside it ("marked world-writable, proceeding
+/// anyway") and nothing failed.
+///
+/// Two halves, both asserted: the committed tree carries the right mode, and the
+/// build narrows it regardless of what it was handed. A mode is not something to
+/// be right about once.
+#[test]
+fn nothing_the_rendered_tree_contributes_is_world_writable_ci_07() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = root().join(cluster_model::GENERATED_DIR);
+    let mut checked = 0usize;
+    let mut stack = vec![dir.clone()];
+    while let Some(next) = stack.pop() {
+        for entry in std::fs::read_dir(&next).expect("the generated tree exists") {
+            let path = entry.expect("a readable entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let mode = std::fs::metadata(&path)
+                .expect("a readable file")
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o022,
+                0,
+                "{}: mode {:o} is writable beyond its owner. The build copies this mode \
+                 through, and a world-writable policy.json is the one file §12.3 calls \
+                 the only thing between an unattended node and an arbitrary image",
+                path.strip_prefix(&dir).unwrap_or(&path).display(),
+                mode & 0o777
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 0,
+        "the generated tree is empty, or this checks nothing"
+    );
+
+    // And the build narrows whatever it was handed, so the guarantee does not
+    // depend on the umask of whoever last ran `just render`.
+    let files = containerfiles(&root());
+    let image = files
+        .iter()
+        .find(|f| f.name == cluster_model::render::NODE_DIR)
+        .expect("images/node/Containerfile is the one image (§8.4)");
+    assert!(
+        image.issues("chmod -R go-w"),
+        "the build must narrow the modes it copied rather than trusting them (§8.1)"
     );
 }

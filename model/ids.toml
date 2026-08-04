@@ -247,6 +247,41 @@ provenance as a comment.
 """
 
 [[id]]
+id = "CD-17"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+The policy a node configures itself from is rendered, not compiled in: the
+class thresholds, the addressing bases, the route metrics, the discovery
+parameters and the role table all reach `cluster-init` from a diff-gated
+artifact, and none of them is a constant in the binary that reads them.
+"""
+
+[[id]]
+id = "CD-18"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+Every role's firewall include is rendered, including the empty ones, and the
+common ruleset includes exactly one of them. One image carries one ruleset, so
+an accept that holds for one role only is a file that role's marker selects
+rather than a rule every machine applies.
+"""
+
+[[id]]
+id = "CD-19"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+Every role's kernel-argument set is rendered, including the empty ones, and the
+base carries none of the isolation arguments. One image boots all three roles,
+so an isolcpus= in the image would isolate the storage node's cores too.
+"""
+
+[[id]]
 id = "CD-10"
 level = "build"
 suite = "definition"
@@ -560,6 +595,39 @@ declares, simultaneous multithreading is off, and the scaling governor is the
 declared one.
 """
 
+[[id]]
+id = "CB-07"
+level = "build"
+suite = "boot"
+tier = "T1"
+statement = """
+A booted node sorted its own ports into classes by the speeds their drivers
+report support for, took the ordinal its own hardware entitles it to, and wrote
+the addresses that follow from it --- none of which was in the image it booted.
+"""
+
+[[id]]
+id = "CB-08"
+level = "build"
+suite = "boot"
+tier = "T1"
+statement = """
+Exactly one role marker exists on a booted node, every unit belonging to another
+role is inactive rather than failed, and no unit belonging to this node's role
+was skipped.
+"""
+
+[[id]]
+id = "CI-07"
+level = "build"
+suite = "image"
+tier = "T0"
+statement = """
+Nothing the rendered tree contributes to the image is writable by anyone but
+root, and the build sets the mode rather than inheriting whatever umask rendered
+the tree.
+"""
+
 # ---------------------------------------------------------------------------
 # CN- --- Network. Mesh behaviour and failover (SPEC.md §4).
 # ---------------------------------------------------------------------------
@@ -593,6 +661,28 @@ tier = "T2"
 statement = """
 The loaded packet filter on every node defaults to drop on input and carries
 every flow the model declares for that node.
+"""
+
+[[id]]
+id = "CN-04"
+level = "build"
+suite = "network"
+tier = "T2"
+statement = """
+Each node learned which peer is on the far end of each of its mesh ports, and
+the two ends of every cable took the two addresses of one /31 with neither told
+which to take.
+"""
+
+[[id]]
+id = "CN-05"
+level = "build"
+suite = "network"
+tier = "T2"
+statement = """
+The registrar assigned ordinals in the order machines registered, returns the
+same assignment to a machine that asks twice, and hands a released ordinal to
+the next machine rather than a fresh one.
 """
 
 # ---------------------------------------------------------------------------
@@ -1018,6 +1108,19 @@ session list, and labels a held dirty archive distinctly from an ordinary one.
 # claim does not exist.
 #
 # ---------------------------------------------------------------------------
+
+[[error]]
+name = "InitError"
+crate = "cluster-init"
+sanctioned_by = "CB-07"
+statement = """
+A machine could not work out what it is: ports that classify into the wrong
+counts, two bulk disks or none, an ordinal outside the fleet, a registrar that
+did not answer, a rendered policy missing a key. None of these is recoverable in
+the sense of carrying on anyway --- a node that started its services without an
+ordinal would look healthy while being wrong --- so every one of them fails the
+boot rather than degrading it (SPEC.md §3.1, §21.11).
+"""
 
 [[error]]
 name = "ProbeError"

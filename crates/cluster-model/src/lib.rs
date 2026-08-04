@@ -125,10 +125,7 @@ impl Cluster {
     pub fn node_at(&self, ordinal: u32) -> Option<Node> {
         let role = self.cluster.role_of_ordinal(ordinal)?;
         let loopback = self.network.addressing.loopback_of(ordinal)?;
-        let fqdn = self
-            .cluster
-            .fleet
-            .name_of(ordinal, &self.cluster.domain);
+        let fqdn = self.cluster.fleet.name_of(ordinal, &self.cluster.domain);
         // The short name is the fully-qualified one without the domain, so the
         // two cannot disagree: `node2` is whatever `node2.devcluster` starts
         // with, not a second template.
@@ -334,6 +331,33 @@ impl Cluster {
             )));
         }
 
+        // Every assigned role must name the same second device.
+        //
+        // The installer prepares secondary storage from what it measures (§12.1),
+        // and it cannot tell compute from testbed: that is the registrar's
+        // decision, taken later over a network that does not exist during
+        // Anaconda. Two roles wanting different devices would be a kickstart with
+        // a branch it has no way to take.
+        let local: BTreeSet<&str> = self
+            .cluster
+            .assigned_roles()
+            .iter()
+            .filter_map(|r| {
+                r.devices
+                    .container_graph_device
+                    .as_deref()
+                    .or(r.devices.bench_device.as_deref())
+            })
+            .collect();
+        if local.len() > 1 {
+            return Err(bad(format!(
+                "the assigned roles name {local:?} as their local device. The installer \
+                 cannot tell them apart --- which role a machine holds is decided after \
+                 install, over a network that does not exist during Anaconda --- so they \
+                 must agree (§2.3.2, §12.1)"
+            )));
+        }
+
         // The threshold that decides which machine is the storage node must sit
         // between the devices a conforming machine carries. One above every
         // disk is true on no machine; one below the container-graph SSD is true
@@ -439,7 +463,9 @@ impl Cluster {
         // a cable rather than to the node.
         for ordinal in self.cluster.fleet.ordinals() {
             let loopback = addressing.loopback_of(ordinal).ok_or_else(|| {
-                bad(format!("ordinal {ordinal}: the loopback base does not reach it"))
+                bad(format!(
+                    "ordinal {ordinal}: the loopback base does not reach it"
+                ))
             })?;
             if seen.contains(&loopback) {
                 return Err(bad(format!(
@@ -453,12 +479,15 @@ impl Cluster {
         // must ask for a port per peer, and the speeds must be ordered -- a
         // mesh threshold at or below the LAN one puts every port in one class.
         let mesh = self.network.mesh_class().ok_or_else(|| {
-            bad("no `mesh` interface class. §3.1 classifies ports by speed, and the mesh \
-                 class is what recognises a 10GBase-T port")
+            bad(
+                "no `mesh` interface class. §3.1 classifies ports by speed, and the mesh \
+                 class is what recognises a 10GBase-T port",
+            )
         })?;
-        let lan = self.network.lan_class().ok_or_else(|| {
-            bad("no `lan` interface class (§3.1)")
-        })?;
+        let lan = self
+            .network
+            .lan_class()
+            .ok_or_else(|| bad("no `lan` interface class (§3.1)"))?;
         if mesh.min_speed_mbps <= lan.min_speed_mbps {
             return Err(bad(format!(
                 "the mesh class starts at {} Mbps and the LAN class at {}. The mesh \
@@ -709,13 +738,10 @@ impl Cluster {
         // cores on the storage node would cost half its CPU to no purpose. A
         // variant that put its isolation kargs in the base would do exactly
         // that, so the base carries none of them (§8.5).
-        if let Some(karg) = self
-            .images
-            .base
-            .content
-            .kargs
-            .iter()
-            .find(|k| k.starts_with("isolcpus=") || k.starts_with("nohz_full=") || *k == "nosmt")
+        if let Some(karg) =
+            self.images.base.content.kargs.iter().find(|k| {
+                k.starts_with("isolcpus=") || k.starts_with("nohz_full=") || *k == "nosmt"
+            })
         {
             return Err(bad(format!(
                 "the base carries kernel argument `{karg}`. One image boots all three roles, \
@@ -857,7 +883,10 @@ impl Cluster {
 
     /// Every peer of `node`, in ordinal order.
     pub fn peers_of(&self, node: &str) -> Vec<Node> {
-        self.nodes().into_iter().filter(|n| n.name != node).collect()
+        self.nodes()
+            .into_iter()
+            .filter(|n| n.name != node)
+            .collect()
     }
 }
 

@@ -82,13 +82,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sign each digest, then move :stable to it
+      - name: Sign the digest, then move :stable to it
         id: publish
         run: |
           set -euo pipefail
           sha='${{ steps.source.outputs.sha }}'
           body="Promoted from ${sha}"
-          for node in n1 n2 n3; do
+          # One image (§8.4), so one digest to sign and one tag to move. There
+          # were three, and every promotion was three chances for two of them to
+          # end up at different digests behind one release note.
+          node=node
+          {
             ref="ghcr.io/${{ github.repository }}/$node"
             digest=$(crane digest "$ref:ci-$sha")
             # Signed before it is copied. A digest that reaches :stable unsigned
@@ -103,7 +107,7 @@ jobs:
               "$ref@$digest"
             crane copy "$ref@$digest" "$ref:stable"
             body="${body}"$'\n'"$node: $digest"
-          done
+          }
           {
             echo 'body<<EOF'
             echo "$body"
@@ -122,7 +126,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p iso
-          for node in n1 n2 n3; do
+          # One installer, because there is one image. What the operator chooses
+          # is the order machines are powered on, not which ISO to mount (§12.1).
+          node=node
+          {
             ref="ghcr.io/${{ github.repository }}/$node"
             digest=$(crane digest "$ref:stable")
             # bootc-image-builder reads root's storage and pulls nothing itself.
@@ -139,7 +146,7 @@ jobs:
               --config /config/config.toml \
               "$ref@$digest"
             sudo mv iso/bootiso/install.iso "iso/$node.iso"
-          done
+          }
           sudo chown -R "$USER" iso
           ( cd iso && sha256sum ./*.iso > SHA256SUMS )
           {

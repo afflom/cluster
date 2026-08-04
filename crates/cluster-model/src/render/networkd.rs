@@ -37,8 +37,12 @@ pub(crate) fn render(c: &Cluster) -> Vec<Rendered> {
 /// nobody looked at.
 fn policy(c: &Cluster) -> Rendered {
     let net = &c.network;
-    let mesh = net.mesh_class().expect("the model check requires a mesh class");
-    let lan = net.lan_class().expect("the model check requires a lan class");
+    let mesh = net
+        .mesh_class()
+        .expect("the model check requires a mesh class");
+    let lan = net
+        .lan_class()
+        .expect("the model check requires a lan class");
     let addressing = &net.addressing;
     let discovery = &net.discovery;
 
@@ -73,14 +77,14 @@ fn policy(c: &Cluster) -> Rendered {
         addressing.loopback_prefix_len
     ));
     body.push_str(&format!("link_base={}\n", addressing.link_base));
-    body.push_str(&format!("link_prefix_len={}\n\n", addressing.link_prefix_len));
+    body.push_str(&format!(
+        "link_prefix_len={}\n\n",
+        addressing.link_prefix_len
+    ));
 
     body.push_str("# Failover with no daemon: networkd withdraws the direct route on\n");
     body.push_str("# carrier loss and the transit route takes over at one more hop (§4.2).\n");
-    body.push_str(&format!(
-        "direct_metric={}\n",
-        net.routing.direct_metric
-    ));
+    body.push_str(&format!("direct_metric={}\n", net.routing.direct_metric));
     body.push_str(&format!(
         "transit_metric={}\n\n",
         net.routing.transit_metric
@@ -89,7 +93,10 @@ fn policy(c: &Cluster) -> Rendered {
     body.push_str("# Learning which peer is on the far end of a given cable (§3.3).\n");
     body.push_str(&format!("discovery_group={}\n", discovery.group));
     body.push_str(&format!("discovery_port={}\n", discovery.port));
-    body.push_str(&format!("discovery_interval_ms={}\n", discovery.interval_ms));
+    body.push_str(&format!(
+        "discovery_interval_ms={}\n",
+        discovery.interval_ms
+    ));
     body.push_str(&format!("discovery_timeout_s={}\n\n", discovery.timeout_s));
 
     body.push_str("# Where a node reads its own stable identifier, before it has an\n");
@@ -102,10 +109,16 @@ fn policy(c: &Cluster) -> Rendered {
 
     body.push_str("# The cluster's names (§4.3).\n");
     body.push_str(&format!("domain={}\n", c.cluster.domain));
-    body.push_str(&format!("name_template={}\n", c.cluster.fleet.name_template));
+    body.push_str(&format!(
+        "name_template={}\n",
+        c.cluster.fleet.name_template
+    ));
     body.push_str(&format!("entry_name={}\n", c.cluster.fleet.entry_name));
     body.push_str(&format!("hosts_path={}\n", net.hosts.path));
-    body.push_str(&format!("hosts_staging_path={}\n\n", net.hosts.staging_path));
+    body.push_str(&format!(
+        "hosts_staging_path={}\n\n",
+        net.hosts.staging_path
+    ));
 
     body.push_str("# Which role takes which ordinal, and which are handed out in what\n");
     body.push_str("# order (§2.3). `detect` is `bulk-disk` for the one role a machine\n");
@@ -139,9 +152,5 @@ fn sysctl(c: &Cluster) -> Rendered {
          # machine forwards, whichever ordinal it holds.\n\
          net.ipv4.ip_forward={forward}\n"
     );
-    Rendered::new(
-        node_path("sysctl.d/90-cluster.conf"),
-        vec!["CD-02"],
-        body,
-    )
+    Rendered::new(node_path("sysctl.d/90-cluster.conf"), vec!["CD-02"], body)
 }

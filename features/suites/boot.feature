@@ -53,3 +53,20 @@ Feature: boot
     Then it is the set the model declares
     And simultaneous multithreading is off
     And the scaling governor is the declared one
+
+  @CB-07 @build
+  Scenario: A node works out its own ports, ordinal and addresses
+    Given a machine booted from an image that names no node
+    When cluster-init has run
+    Then it sorted its ports into the classes their supported speeds imply
+    And it took the ordinal its own hardware entitles it to
+    And the addresses on its interfaces are the ones that ordinal derives
+    And none of those facts was present in the image it booted
+
+  @CB-08 @build
+  Scenario: One role marker, and no unit failed for belonging to another role
+    Given a machine that has discovered its role
+    When the units are examined
+    Then exactly one role marker exists under /run/cluster
+    And every unit belonging to another role is inactive rather than failed
+    And no unit belonging to this node's role was skipped

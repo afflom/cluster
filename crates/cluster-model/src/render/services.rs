@@ -265,11 +265,7 @@ fn zot(c: &Cluster) -> Rendered {
     body.push_str("  }\n");
     body.push_str("}\n");
 
-    Rendered::new(
-        node_path("zot/config.json"),
-        vec!["CD-12", "CS-04"],
-        body,
-    )
+    Rendered::new(node_path("zot/config.json"), vec!["CD-12", "CS-04"], body)
 }
 
 /// Prometheus, scraping the mesh (§18).
@@ -316,11 +312,7 @@ fn prometheus(c: &Cluster) -> Rendered {
         ));
     }
 
-    Rendered::new(
-        node_path("prometheus/prometheus.yml"),
-        vec!["CD-12"],
-        body,
-    )
+    Rendered::new(node_path("prometheus/prometheus.yml"), vec!["CD-12"], body)
 }
 
 /// The alerts §18 declares, rendered from `model/policy.toml`.
@@ -476,11 +468,7 @@ fn garage(c: &Cluster) -> Rendered {
     body.push_str("s3_region = \"cluster\"\n\n");
     body.push_str("[admin]\n");
     body.push_str(&format!("api_bind_addr = \"{}:3903\"\n", node.loopback));
-    Rendered::new(
-        node_path("garage/garage.toml"),
-        vec!["CD-12"],
-        body,
-    )
+    Rendered::new(node_path("garage/garage.toml"), vec!["CD-12"], body)
 }
 
 /// The NFS export table (§5.4).
@@ -517,9 +505,5 @@ fn nfs_exports(c: &Cluster) -> Rendered {
         }
     }
 
-    Rendered::new(
-        node_path("exports"),
-        vec!["CD-12", "CS-02"],
-        body,
-    )
+    Rendered::new(node_path("exports"), vec!["CD-12", "CS-02"], body)
 }

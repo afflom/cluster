@@ -65,7 +65,7 @@ jobs:
             echo "::notice title=Pages not enabled::GitHub Pages is off for this \
             repository, so the bundle was built and not published. Enable it at \
             Settings -> Pages with source 'GitHub Actions'; the next run deploys. \
-            The n1 mirror (SPEC.md §16.3) is unaffected and is the route that \
+            The storage-node mirror (SPEC.md §16.3) is unaffected and is the route that \
             always works."
           fi
 
@@ -78,7 +78,7 @@ jobs:
     steps:
       - uses: actions/deploy-pages@v4
 
-  # §16.3: the same bundle, served from n1 at the origin the API is on.
+  # §16.3: the same bundle, served from the storage node at the API's origin.
   #
   # Same-origin has no preflight and no browser policy between a page and the
   # API it was built for --- which retires the whole Local Network Access risk
@@ -95,7 +95,7 @@ jobs:
     # queued against a runner that does not exist blocks the workflow for ever.
     # Pages remains canonical either way (§16.3), so an absent mirror is a route
     # that does not exist yet rather than a UI that does not work.
-    # Never for a fork. §9.1 derives "T2 may run on n1" from fork pull requests
+    # Never for a fork. §9.1 derives "T2 may run on the storage node" from fork PRs
     # not existing, which was true only while the repository was private. It is
     # public, so a fork's pull request would otherwise schedule that fork's code
     # on a node holding the registry, the object store and every devcontainer.

@@ -33,6 +33,7 @@ fn rendered() -> Vec<Rendered> {
 }
 
 /// Every rendered file whose path matches a suffix.
+#[allow(dead_code)]
 fn matching(files: &[Rendered], suffix: &str) -> Vec<Rendered> {
     files
         .iter()
@@ -140,7 +141,7 @@ fn the_firewall_drops_by_default_cd_03() {
     for node in &c.nodes() {
         let nft = files
             .iter()
-            .find(|f| f.path == format!("node/nftables.conf"))
+            .find(|f| f.path == "node/nftables.conf")
             .expect("every node renders a packet filter");
 
         assert!(
@@ -276,11 +277,7 @@ fn every_volume_mount_carries_its_relabel_cd_05() {
             let unit = files
                 .iter()
                 .find(|f| {
-                    f.path
-                        == format!(
-                            "node/containers-systemd/{}.{}",
-                            quadlet.name, quadlet.kind
-                        )
+                    f.path == format!("node/containers-systemd/{}.{}", quadlet.name, quadlet.kind)
                 })
                 .unwrap_or_else(|| panic!("{}: {} was not rendered", node.name, quadlet.name));
             for mount in &quadlet.mount {
@@ -348,7 +345,9 @@ fn isolation_is_a_role_karg_and_never_a_base_one_cd_06() {
     assert!(!declared.is_empty(), "no kernel arguments were parsed");
     for forbidden in ["isolcpus=", "nohz_full=", "nosmt"] {
         assert!(
-            !declared.iter().any(|k| k.starts_with(forbidden) || *k == forbidden),
+            !declared
+                .iter()
+                .any(|k| k.starts_with(forbidden) || *k == forbidden),
             "the base kernel arguments carry `{forbidden}`, which would isolate the \
              storage node's cores too (§8.4, §8.5)"
         );
@@ -513,7 +512,7 @@ fn unattended_behaviour_is_rendered_from_policy_cd_08() {
 
         let check = files
             .iter()
-            .find(|f| f.path.starts_with(&format!("node/greenboot/")))
+            .find(|f| f.path.starts_with("node/greenboot/"))
             .expect("every node renders a greenboot check");
         assert!(
             check
@@ -631,7 +630,8 @@ fn a_devcontainer_alias_survives_migration_cd_10() {
 
     assert!(ssh.body.contains("Host dc-*"), "no devcontainer alias");
 
-    let control = c.node_with_role(&c.policy.drain.migration_target)
+    let control = c
+        .node_with_role(&c.policy.drain.migration_target)
         .expect("the model check requires the migration target to be a declared role");
     // By the control plane's *tailnet* name, not by an address. A client is not
     // on the mesh, and management addresses come from DHCP (§3.2), so MagicDNS
@@ -641,7 +641,8 @@ fn a_devcontainer_alias_survives_migration_cd_10() {
         control.name, c.cluster.tailnet, c.cluster.magic_dns_suffix
     );
     assert!(
-        ssh.body.contains(&format!("http://{host}:8080/api/sessions/")),
+        ssh.body
+            .contains(&format!("http://{host}:8080/api/sessions/")),
         "the alias must resolve the session's current host from the control plane (§11.1)"
     );
     assert!(
@@ -673,7 +674,7 @@ fn trust_and_pull_order_render_from_the_model_cd_11() {
     for node in &c.nodes() {
         let policy = files
             .iter()
-            .find(|f| f.path == format!("node/containers/policy.json"))
+            .find(|f| f.path == "node/containers/policy.json")
             .expect("every node renders a signature policy");
 
         // Default reject. A default of `insecureAcceptAnything` would make every
@@ -700,10 +701,11 @@ fn trust_and_pull_order_render_from_the_model_cd_11() {
 
         let registries = files
             .iter()
-            .find(|f| f.path == format!("node/containers/registries.conf"))
+            .find(|f| f.path == "node/containers/registries.conf")
             .expect("every node renders a registry configuration");
 
-        let storage = c.node_with_role(&c.policy.drain.migration_target)
+        let storage = c
+            .node_with_role(&c.policy.drain.migration_target)
             .expect("the migration target is a declared role");
         let local = format!("{}:{}", storage.loopback, c.images.registries.port);
         assert!(registries.body.contains(&local));
@@ -749,7 +751,8 @@ fn trust_and_pull_order_render_from_the_model_cd_11() {
         .iter()
         .find(|f| f.path.ends_with("containers-systemd/zot.container"))
         .expect("the registry Quadlet is rendered");
-    let storage = c.node_with_role(&c.policy.drain.migration_target)
+    let storage = c
+        .node_with_role(&c.policy.drain.migration_target)
         .expect("the migration target is a declared role");
     assert!(zot
         .body
@@ -766,7 +769,6 @@ fn trust_and_pull_order_render_from_the_model_cd_11() {
 fn every_declared_alert_renders_as_a_rule_cd_13() {
     let c = model();
     let files = rendered();
-    let storage = &c.policy.drain.migration_target;
 
     let rules = files
         .iter()
@@ -830,7 +832,8 @@ fn every_declared_alert_renders_as_a_rule_cd_13() {
 fn the_registry_mirrors_and_caches_as_declared_cs_04() {
     let c = model();
     let files = rendered();
-    let storage = c.node_with_role(&c.policy.drain.migration_target)
+    let storage = c
+        .node_with_role(&c.policy.drain.migration_target)
         .expect("the migration target is a declared role");
 
     let config = files
@@ -876,13 +879,14 @@ fn the_registry_mirrors_and_caches_as_declared_cs_04() {
 fn an_ssh_session_records_an_attachment_cg_07() {
     let c = model();
     let files = rendered();
-    let control = c.node_with_role(&c.policy.drain.migration_target)
+    let control = c
+        .node_with_role(&c.policy.drain.migration_target)
         .expect("the migration target is a declared role");
 
     for node in &c.nodes() {
         let hook = files
             .iter()
-            .find(|f| f.path == format!("node/sshrc"))
+            .find(|f| f.path == "node/sshrc")
             .expect("every node renders the attachment hook");
 
         // `sshrc`, not a profile script: scp, rsync and a VS Code server
@@ -994,19 +998,20 @@ fn host_policy_is_rendered_not_declared_twice_cd_14() {
 fn the_control_plane_is_published_on_the_tailnet_cd_15() {
     let c = model();
     let files = rendered();
-    let node = c.node_with_role(&c.policy.drain.migration_target)
+    let node = c
+        .node_with_role(&c.policy.drain.migration_target)
         .expect("the migration target is a declared role");
 
     let unit = files
         .iter()
-        .find(|f| f.path == format!("node/systemd/tailscale-serve.service"))
+        .find(|f| f.path == "node/systemd/tailscale-serve.service")
         .expect("the control plane is published");
 
     // The same address the control plane binds. A publish unit pointing
     // somewhere else would succeed and serve nothing.
     let control = files
         .iter()
-        .find(|f| f.path == format!("node/systemd/cluster-ctl.service"))
+        .find(|f| f.path == "node/systemd/cluster-ctl.service")
         .expect("the control plane unit is rendered");
     assert!(control.body.contains(&format!("{}:8080", node.loopback)));
     assert!(unit
@@ -1140,4 +1145,213 @@ fn every_rendered_artifact_is_valid_in_its_syntax_cd_16() {
         scripts > 0,
         "no scripts are rendered, so this checks nothing"
     );
+}
+
+/// `CD-17`: the policy a node configures itself from is rendered, not compiled
+/// in.
+///
+/// The claim is about *absence* as much as presence: `cluster-init` reads every
+/// threshold from this file, so a value that lived in both the model and the
+/// binary would be two sources for one fact, and the one that drifted would be
+/// the one nobody read.
+#[test]
+fn a_node_configures_itself_from_a_rendered_policy_cd_17() {
+    let c = model();
+    let files = rendered();
+
+    let policy = files
+        .iter()
+        .find(|f| f.path == "node/init.conf")
+        .expect("the node policy is rendered");
+
+    let mesh = c.network.mesh_class().expect("a mesh class is declared");
+    let lan = c.network.lan_class().expect("a lan class is declared");
+    let a = &c.network.addressing;
+    let d = &c.network.discovery;
+    for expected in [
+        format!("mesh_min_speed_mbps={}", mesh.min_speed_mbps),
+        format!("mesh_count={}", mesh.count),
+        format!("mesh_mtu={}", mesh.mtu),
+        format!("lan_min_speed_mbps={}", lan.min_speed_mbps),
+        format!("lan_mtu={}", lan.mtu),
+        format!("fleet_size={}", c.cluster.fleet.size),
+        format!("loopback_base={}", a.loopback_base),
+        format!("link_base={}", a.link_base),
+        format!("direct_metric={}", c.network.routing.direct_metric),
+        format!("transit_metric={}", c.network.routing.transit_metric),
+        format!("discovery_group={}", d.group),
+        format!("discovery_port={}", d.port),
+        format!("discovery_timeout_s={}", d.timeout_s),
+        format!("machine_id_path={}", c.cluster.identity.source),
+        format!("bulk_disk_min_gb={}", c.cluster.detection.bulk_disk_min_gb),
+        format!("domain={}", c.cluster.domain),
+        format!("entry_name={}", c.cluster.fleet.entry_name),
+    ] {
+        assert!(
+            policy.body.contains(&expected),
+            "the rendered policy must carry `{expected}` (§3.1, §4.1)"
+        );
+    }
+
+    // Every role, with how it is come by and where it sits in the rollout.
+    for role in &c.cluster.role {
+        let row = format!("role={}:{}:", role.id, role.detect);
+        assert!(
+            policy.body.contains(&row),
+            "the rendered policy must carry a row for `{}` (§2.3)",
+            role.id
+        );
+    }
+
+    // And the binary that reads it declares none of these itself. A search over
+    // the crate's source, which is coarse in one direction only: a value that
+    // appears in an unrelated context passes when it should not. The expensive
+    // failure is the other one --- a threshold hard-coded beside the model's ---
+    // and this catches every instance of it.
+    let source = read_crate_source("cluster-init");
+    for literal in [
+        mesh.min_speed_mbps.to_string(),
+        c.cluster.detection.bulk_disk_min_gb.to_string(),
+        c.network.routing.transit_metric.to_string(),
+        a.loopback_base.clone(),
+        a.link_base.clone(),
+    ] {
+        assert!(
+            !source.contains(&literal),
+            "cluster-init's source carries `{literal}`, which is a model fact. A value in \
+             both the binary and the model is two sources for it (§7.2, CD-17)"
+        );
+    }
+}
+
+/// `CD-18`: every role's firewall include is rendered, empty ones included.
+#[test]
+fn every_role_renders_a_firewall_include_cd_18() {
+    let c = model();
+    let files = rendered();
+
+    let common = files
+        .iter()
+        .find(|f| f.path == "node/nftables.conf")
+        .expect("the common ruleset is rendered");
+    let includes = common.body.matches("include \"").count();
+    assert_eq!(
+        includes, 1,
+        "the common ruleset includes exactly one role file; one image carries one \
+         ruleset (§4.4, §8.4)"
+    );
+
+    for role in &c.cluster.role {
+        let file = files
+            .iter()
+            .find(|f| f.path == format!("node/nftables-role-{}.conf", role.id))
+            .unwrap_or_else(|| {
+                panic!(
+                    "`{}` renders no firewall include. nft fails to load a ruleset that \
+                     includes a file which is not there, so `no rules` has to be a file \
+                     that says so",
+                    role.id
+                )
+            });
+
+        // A restricted rule appears in its own role's file and nowhere else.
+        for rule in c.network.firewall.rule.iter().filter(|r| !r.is_universal()) {
+            let port = format!("dport {}", rule.port);
+            let expected = rule.applies_to(&role.id);
+            assert_eq!(
+                file.body.contains(&port),
+                expected,
+                "`{}`: `{}` must appear only in the roles it names (§4.4)",
+                role.id,
+                rule.comment
+            );
+            assert!(
+                !common.body.contains(&port),
+                "`{}` is restricted to a role and must not be in the common ruleset: \
+                 putting it there opens the port on every machine (§8.4)",
+                rule.comment
+            );
+        }
+    }
+}
+
+/// `CD-19`: every role's kernel-argument set is rendered, empty ones included.
+#[test]
+fn every_role_renders_a_kernel_argument_set_cd_19() {
+    let c = model();
+    let files = rendered();
+
+    for role in &c.cluster.role {
+        let file = files
+            .iter()
+            .find(|f| f.path == format!("node/role-kargs-{}.conf", role.id))
+            .unwrap_or_else(|| {
+                panic!(
+                    "`{}` renders no kernel-argument set. cluster-init reads one per role, \
+                     and an absent file is indistinguishable from a role whose arguments \
+                     nobody rendered",
+                    role.id
+                )
+            });
+        assert!(
+            file.body.lines().any(|l| l.starts_with("options=")),
+            "`{}`: the set must be an `options=` line even when it is empty",
+            role.id
+        );
+
+        let variant = c
+            .images
+            .variant_for(&role.id)
+            .expect("the model check requires a variant per role");
+        for karg in &variant.kargs {
+            assert!(
+                file.body.contains(karg),
+                "`{}`: the model declares `{karg}` and the rendered set omits it",
+                role.id
+            );
+        }
+    }
+}
+
+/// A crate's *shipped* source, concatenated. Used by `CD-17` to assert that a
+/// model fact is not also a literal in the binary that reads it.
+///
+/// Two things are dropped, and both were caught firing wrongly before this
+/// comment existed.
+///
+/// **Everything from `#[cfg(test)]` onwards.** A test fixture naming 10000 Mbps
+/// is not a second source for the mesh threshold --- it is a fixture, and it has
+/// to name a number to be one.
+///
+/// **Every comment line.** `links.rs` explains that `ethtool` reports
+/// `10000baseT/Full`, which is documentation of a format, not a value the binary
+/// uses. This is the third time in this repository an extractor has read prose as
+/// code, and the tell is always the same: the thing it objected to was a sentence
+/// about the thing rather than the thing.
+fn read_crate_source(name: &str) -> String {
+    let dir = root().join("crates").join(name).join("src");
+    let mut out = String::new();
+    let mut stack = vec![dir];
+    while let Some(next) = stack.pop() {
+        for entry in std::fs::read_dir(&next).expect("the crate has a source directory") {
+            let path = entry.expect("a readable entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).expect("a readable source file");
+                let shipped = text
+                    .split_once("#[cfg(test)]")
+                    .map_or(text.as_str(), |(before, _)| before);
+                for line in shipped.lines() {
+                    let code = line.trim_start();
+                    if code.starts_with("//") {
+                        continue;
+                    }
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
+    }
+    out
 }

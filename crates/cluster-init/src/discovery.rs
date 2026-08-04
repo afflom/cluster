@@ -221,6 +221,9 @@ mod tests {
     #[test]
     fn a_malformed_datagram_is_reported_and_not_ignored() {
         assert!(Announcement::decode(b"not json").is_err());
-        assert!(Announcement::decode(b"{}").is_err(), "machine_id is required");
+        assert!(
+            Announcement::decode(b"{}").is_err(),
+            "machine_id is required"
+        );
     }
 }

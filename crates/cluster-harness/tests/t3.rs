@@ -30,16 +30,23 @@ fn model() -> Cluster {
     c
 }
 
-/// Run a command on a real node, over the management plane.
-///
-/// The inventory is the model: `SPEC.md` §17.1 says no node holds identity
-/// beyond what the model declares, so a smoke run that read a hosts file or an
-/// inventory of its own would be testing against a second source.
+/// A node's name on the tailnet, which is the only stable way to reach one
+/// (§3.2, §4.5).
+fn tailnet_name(name: &str) -> String {
+    let c = model();
+    format!(
+        "{name}.{}.{}",
+        c.cluster.tailnet, c.cluster.magic_dns_suffix
+    )
+}
+
+/// Run a command on a real node, over the tailnet.
 fn on(node: &Node, command: &str) -> Result<String, String> {
-    let address = node
-        .mgmt_address
-        .split_once('/')
-        .map_or(node.mgmt_address.as_str(), |(a, _)| a);
+    // By the node's tailnet name. Management addresses come from DHCP (§3.2), so
+    // there is no address to write down --- and a smoke run that read an
+    // inventory of its own would be testing against a second source. MagicDNS is
+    // the one stable name, and it works on the LAN and off it alike (§4.5).
+    let address = tailnet_name(&node.name);
     let output = Command::new("ssh")
         .args([
             "-o",
@@ -78,7 +85,7 @@ fn every_declared_firmware_setting_holds_ch_01() {
         "the model declares firmware settings, or this test verifies nothing"
     );
 
-    for node in &c.cluster.node {
+    for node in &c.nodes() {
         for setting in &c.cluster.firmware {
             let (kind, key) = setting
                 .probe
@@ -122,78 +129,93 @@ fn ipmi_query(key: &str) -> &'static str {
     }
 }
 
-/// `CH-02`: every declared MAC is present and carries its declared role.
+/// `CH-02`: the machine presents the ports the profile declares, and each mesh
+/// port reaches the peer the addressing assumed.
 ///
-/// Interface identity is a model fact (§3.1), and this is the only tier that can
-/// confirm the card the model names is the card that is there. A swapped cable
-/// or a replaced mainboard fails here rather than producing a silently mis-wired
-/// mesh --- and §17.1 makes the fix a model change, not a node change.
+/// This used to assert that every MAC in the model was present on the card the
+/// model named. There are no MACs any more (§3.1): they are assigned by whoever
+/// made the card, they change when a mainboard is replaced, and a fleet that
+/// recorded them made replacing hardware an edit to a repository.
+///
+/// What real hardware can still establish, and simulation cannot, is that the
+/// chassis in the rack is the shape §2.1 says it is --- and that the cables run
+/// where the addressing believes they do. §21.12 records what was given up: a
+/// mesh cable moved between the two 10GbE ports of one machine is not detected,
+/// because it is not an error.
 #[test]
-fn every_declared_mac_is_present_in_its_role_ch_02() {
+fn the_ports_and_the_cabling_are_what_the_model_expects_ch_02() {
     let c = model();
+    let profile = &c.cluster.profile;
+    let mesh = c
+        .network
+        .mesh_class()
+        .expect("the model declares a mesh class");
+    let lan = c
+        .network
+        .lan_class()
+        .expect("the model declares a lan class");
 
-    for node in &c.cluster.node {
-        for (role, mac) in node.mac.roles() {
-            if role == "bmc" {
-                // The BMC's NIC belongs to the BMC, not to the host OS, and it
-                // is on an isolated VLAN the host does not configure (§3.2).
-                let observed = on(node, "ipmitool lan print 1 | grep -i 'MAC Address'")
-                    .unwrap_or_else(|e| panic!("{e}"));
-                assert!(
-                    observed.to_lowercase().contains(&mac.to_lowercase()),
-                    "{}.bmc: the model declares {mac}; the BMC reports: {observed}",
-                    node.name
-                );
-                continue;
-            }
+    for node in &c.nodes() {
+        // Counted from each driver's *supported* modes, which is what the
+        // classifier reads: a mesh port with no cable in it reports no speed at
+        // all, and on a fleet mid-boot several of them have none (§3.1).
+        let script = "for d in /sys/class/net/*/device; do n=$(basename $(dirname $d)); \
+                      ethtool $n 2>/dev/null | sed -n '/Supported link modes/,/Supported pause/p' \
+                      | grep -o '[0-9]*base' | tr -d 'base' | sort -n | tail -1; done";
+        let speeds: Vec<u32> = on(node, script)
+            .unwrap_or_else(|e| panic!("{e}"))
+            .lines()
+            .filter_map(|l| l.trim().parse::<u32>().ok())
+            .collect();
 
-            let interface = on(
+        let mesh_ports = speeds.iter().filter(|m| **m >= mesh.min_speed_mbps).count();
+        assert_eq!(
+            mesh_ports, profile.nic_10g as usize,
+            "{}: the profile declares {} mesh-class ports and the chassis presents \
+             {mesh_ports}. A machine that came up with fewer would join with no \
+             redundancy and nothing would say so (§2.1, §3.1)",
+            node.name, profile.nic_10g
+        );
+        assert!(
+            mesh_ports >= mesh.count as usize,
+            "{}: fewer mesh ports than the mesh class requires",
+            node.name
+        );
+
+        let lan_ports = speeds
+            .iter()
+            .filter(|m| **m >= lan.min_speed_mbps && **m < mesh.min_speed_mbps)
+            .count();
+        assert!(
+            lan_ports >= lan.count as usize,
+            "{}: {lan_ports} LAN-class port(s), and a conforming machine presents at \
+             least {} (§2.1, §3.1)",
+            node.name,
+            lan.count
+        );
+
+        // And the cabling: every peer loopback is reachable, which is only true
+        // if each cable runs to the machine the addressing assumed it did.
+        for peer in c.peers_of(&node.name) {
+            let reached = on(
                 node,
                 &format!(
-                    "grep -il '^{}$' /sys/class/net/*/address | head -1 | xargs -r dirname | xargs -r basename",
-                    mac.to_lowercase()
+                    "ping -c 1 -W 5 {} >/dev/null 2>&1 && echo ok",
+                    peer.loopback
                 ),
             )
             .unwrap_or_else(|e| panic!("{e}"));
-            assert!(
-                !interface.is_empty(),
-                "{}.{role}: the model declares {mac} and no interface carries it. A \
-                 swapped cable or a replaced mainboard fails here rather than \
-                 producing a silently mis-wired mesh (§3.1, §17.1)",
-                node.name
+            assert_eq!(
+                reached.trim(),
+                "ok",
+                "{} cannot reach {} at {}. Either a cable runs to a machine the \
+                 addressing does not expect, or one is missing (§3.3, §21.12)",
+                node.name,
+                peer.name,
+                peer.loopback
             );
-
-            // And it carries the address the rendered unit gives that role, so
-            // the card is not merely present but wired where the model says.
-            let expected = expected_address(&c, node, role);
-            if let Some(expected) = expected {
-                let addresses = on(node, &format!("ip -o -4 addr show dev {interface}"))
-                    .unwrap_or_else(|e| panic!("{e}"));
-                assert!(
-                    addresses.contains(&expected),
-                    "{}.{role} ({interface}) should carry {expected}: {addresses}",
-                    node.name
-                );
-            }
         }
     }
-}
-
-/// The address the model gives an interface role on a node.
-fn expected_address(c: &Cluster, node: &Node, role: &str) -> Option<String> {
-    if role == "mgmt" {
-        return Some(
-            node.mgmt_address
-                .split_once('/')
-                .map_or(node.mgmt_address.clone(), |(a, _)| a.to_string()),
-        );
-    }
-    c.network
-        .links_of(&node.name)
-        .into_iter()
-        .find(|l| l.interface_of(&node.name) == Some(role))
-        .and_then(|l| l.address_of(&node.name))
-        .map(|a| a.to_string())
 }
 
 /// `CH-03`: the declared storage devices are present, in their declared roles.
@@ -206,7 +228,26 @@ fn expected_address(c: &Cluster, node: &Node, role: &str) -> Option<String> {
 fn the_declared_storage_devices_are_present_ch_03() {
     let c = model();
 
-    for node in &c.cluster.node {
+    // Which devices a machine carries follows from its role, and the role is
+    // discovered (§2.3). The storage node is the one holding the bulk device ---
+    // that is the whole of §2.3.1's predicate --- so it is the one expected to
+    // have all three, and the others the two that are not bulk.
+    let storage_role = c
+        .cluster
+        .self_detected_role()
+        .expect("the model declares a self-detected role")
+        .id
+        .clone();
+    let threshold = c.cluster.detection.bulk_disk_min_gb;
+
+    for node in &c.nodes() {
+        let expected: Vec<&cluster_model::Disk> = c
+            .cluster
+            .disk
+            .iter()
+            .filter(|d| node.role == storage_role || d.size_gb < threshold)
+            .collect();
+
         let block = on(node, "lsblk --nodeps --output NAME,SIZE,ROTA --noheadings")
             .unwrap_or_else(|e| panic!("{e}"));
         let devices: Vec<&str> = block
@@ -216,10 +257,11 @@ fn the_declared_storage_devices_are_present_ch_03() {
             .collect();
         assert_eq!(
             devices.len(),
-            node.disk.len(),
-            "{}: the model declares {} devices and the node has {}: {block}",
+            expected.len(),
+            "{}: a `{}` machine carries {} device(s) and this one has {}: {block}",
             node.name,
-            node.disk.len(),
+            node.role,
+            expected.len(),
             devices.len()
         );
 
@@ -232,7 +274,7 @@ fn the_declared_storage_devices_are_present_ch_03() {
         // The size is checked too. §2.2 is verified physically before the
         // storage node is provisioned, and a 2 TB origin that came back as
         // something else is the sort of substitution that boots fine.
-        for disk in &node.disk {
+        for disk in &expected {
             let rotational = disk.kind == "hdd";
             let matching = devices.iter().any(|line| {
                 let mut fields = line.split_whitespace();
@@ -283,7 +325,7 @@ fn the_real_fleet_is_healthy_on_the_promoted_image_ch_04() {
     let c = model();
     let mut booted = Vec::new();
 
-    for node in &c.cluster.node {
+    for node in &c.nodes() {
         let json = on(node, "/usr/bin/cluster-health check").unwrap_or_else(|e| panic!("{e}"));
         let report: cluster_health::Report =
             serde_json::from_str(&json).unwrap_or_else(|e| panic!("{}: {e}: {json}", node.name));
@@ -317,11 +359,10 @@ fn the_real_fleet_is_healthy_on_the_promoted_image_ch_04() {
 fn every_node_is_the_hardware_the_model_declares_ch_05() {
     let c = model();
 
-    for node in &c.cluster.node {
-        let profile = c
-            .cluster
-            .profile_of(node)
-            .unwrap_or_else(|| panic!("{} names no declared profile", node.name));
+    for node in &c.nodes() {
+        // One profile for the fleet: §2.1 makes the hardware uniform, so it is
+        // declared once and every machine is checked against it.
+        let profile = &c.cluster.profile;
 
         // Cores and threads. `nproc` reports what is online, and on the
         // measurement node SMT is off by kernel argument (§8.5) --- so the
@@ -430,11 +471,26 @@ fn every_node_is_the_hardware_the_model_declares_ch_05() {
 fn the_bmc_holds_its_declared_settings_ch_06() {
     let c = model();
 
-    for node in &c.cluster.node {
-        let bmc = node
-            .bmc_address
-            .split_once('/')
-            .map_or(node.bmc_address.as_str(), |(a, _)| a);
+    for node in &c.nodes() {
+        // The BMC's address is not a model fact and never was one worth being.
+        // It is out-of-band, configured in firmware (§2.4), on a VLAN this
+        // pipeline does not touch --- and since §3.2 made every host address
+        // DHCP, a repository that recorded the BMC's would be recording the one
+        // address it has no part in assigning.
+        //
+        // So the operator supplies it, and its absence fails the tier rather
+        // than skipping it: a hardware smoke run that silently omitted the BMC
+        // would be green about the one path that exists because the node might
+        // be down.
+        let key = format!("CLUSTER_BMC_{}", node.name.to_uppercase());
+        let bmc = std::env::var(&key).unwrap_or_else(|_| {
+            panic!(
+                "{key} is not set. The BMC's address is an operator fact, not a model \
+                 one (§2.4, §3.2), and this tier cannot reach {} without it",
+                node.name
+            )
+        });
+        let bmc = bmc.as_str();
 
         // Out of band: to the BMC itself, not through the host. A query that
         // went through the node would prove nothing about the path that exists
@@ -459,7 +515,12 @@ fn the_bmc_holds_its_declared_settings_ch_06() {
 
         // The storage node comes up first and alone, so the other two find their
         // registry and NFS already answering rather than racing for inrush.
-        if node.power_on_delay_s > 0 {
+        let delay = c
+            .cluster
+            .role(&node.role)
+            .map(|r| r.power_on_delay_s)
+            .unwrap_or_default();
+        if delay > 0 {
             assert_eq!(
                 node.name, c.policy.drain.migration_target,
                 "only the storage node carries a power-on delay (§2.5)"

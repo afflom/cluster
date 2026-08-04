@@ -176,6 +176,7 @@ pub fn qemu_args(
     disk: &str,
     firmware_code: &str,
     firmware_vars: &str,
+    bulk_disk: Option<&str>,
 ) -> Vec<String> {
     let mut args = vec![
         "-machine".to_string(),
@@ -205,6 +206,17 @@ pub fn qemu_args(
         "-drive".to_string(),
         format!("file={disk},format=qcow2,if=virtio"),
     ];
+
+    // The bulk device, on the one guest that should be the storage node.
+    //
+    // §2.3.1 makes holding one the whole of the storage predicate, so this is
+    // how the harness decides which guest becomes the registrar --- by giving it
+    // the hardware, not by telling it. A guest handed the role directly would be
+    // testing a code path no real machine takes.
+    if let Some(path) = bulk_disk {
+        args.push("-drive".to_string());
+        args.push(format!("file={path},format=qcow2,if=virtio"));
+    }
 
     for netdev in mesh_netdevs(cluster, node) {
         args.push("-netdev".to_string());
@@ -315,7 +327,7 @@ mod tests {
         let mut listens: Vec<(String, u16)> = Vec::new();
         let mut connects: Vec<(String, u16)> = Vec::new();
 
-        for node in &c.cluster.node {
+        for node in &c.nodes() {
             let netdevs = mesh_netdevs(&c, node);
             assert_eq!(
                 netdevs.len(),
@@ -331,21 +343,33 @@ mod tests {
             }
         }
 
-        assert_eq!(listens.len(), c.network.link.len());
-        assert_eq!(connects.len(), c.network.link.len());
+        assert_eq!(
+            listens.len(),
+            c.network.addressing.links(c.cluster.fleet.size).len()
+        );
+        assert_eq!(
+            connects.len(),
+            c.network.addressing.links(c.cluster.fleet.size).len()
+        );
         // Exactly one of each end per link, on the same port: a socket pair is a
         // wire only if both ends agree on which wire it is.
-        for link in &c.network.link {
+        for link in c.network.addressing.links(c.cluster.fleet.size) {
             let listening: Vec<&(String, u16)> =
-                listens.iter().filter(|(id, _)| id == &link.id).collect();
+                listens.iter().filter(|(id, _)| id == &link.id()).collect();
             let connecting: Vec<&(String, u16)> =
-                connects.iter().filter(|(id, _)| id == &link.id).collect();
-            assert_eq!(listening.len(), 1, "link {} needs one listener", link.id);
-            assert_eq!(connecting.len(), 1, "link {} needs one connector", link.id);
+                connects.iter().filter(|(id, _)| id == &link.id()).collect();
+            assert_eq!(listening.len(), 1, "link {} needs one listener", link.id());
             assert_eq!(
-                listening[0].1, connecting[0].1,
+                connecting.len(),
+                1,
+                "link {} needs one connector",
+                link.id()
+            );
+            assert_eq!(
+                listening[0].1,
+                connecting[0].1,
                 "link {}'s ends must agree on the port",
-                link.id
+                link.id()
             );
         }
 
@@ -353,7 +377,10 @@ mod tests {
         let mut ports: Vec<u16> = listens.iter().map(|(_, p)| *p).collect();
         ports.sort_unstable();
         ports.dedup();
-        assert_eq!(ports.len(), c.network.link.len());
+        assert_eq!(
+            ports.len(),
+            c.network.addressing.links(c.cluster.fleet.size).len()
+        );
     }
 
     /// The command line boots UEFI and forwards a distinct SSH port per guest.
@@ -361,8 +388,8 @@ mod tests {
     fn the_command_line_boots_uefi_and_forwards_ssh_cm_04() {
         let c = cluster();
         let mut ssh_ports = Vec::new();
-        for node in &c.cluster.node {
-            let args = qemu_args(&c, node, "n.qcow2", "CODE.fd", "VARS.fd");
+        for node in &c.nodes() {
+            let args = qemu_args(&c, node, "n.qcow2", "CODE.fd", "VARS.fd", None);
             let line = args.join(" ");
             assert!(line.contains("pflash"), "OVMF supplies UEFI (§10.3)");
             assert!(
@@ -385,7 +412,7 @@ mod tests {
         ssh_ports.dedup();
         assert_eq!(
             ssh_ports.len(),
-            c.cluster.node.len(),
+            c.cluster.fleet.size as usize,
             "ports must not collide"
         );
     }

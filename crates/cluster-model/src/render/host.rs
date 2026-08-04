@@ -43,7 +43,7 @@ pub(crate) fn render(c: &Cluster) -> Vec<Rendered> {
 /// through the upstream resolver or not at all.
 fn hosts_unit(c: &Cluster) -> Rendered {
     let mut body = String::new();
-    body.push_str(&format!(
+    body.push_str(
         "# Places the rendered hosts file (§4.3).\n\
          #\n\
          # /etc/hosts cannot be written by a container build: a RUN finds the path\n\
@@ -56,7 +56,7 @@ fn hosts_unit(c: &Cluster) -> Rendered {
          # it is a copy of an image file rather than anything computed on the node:\n\
          # the three-way merge on update sees a value that only ever changes when\n\
          # the image changes (§5.2).\n\n",
-    ));
+    );
     body.push_str(&section(
         "Unit",
         &[
@@ -98,13 +98,13 @@ fn hosts_unit(c: &Cluster) -> Rendered {
 /// is one fewer thing the update merge has an opinion about (§5.2).
 fn nftables_dropin(c: &Cluster) -> Rendered {
     let mut body = String::new();
-    body.push_str(&format!(
+    body.push_str(
         "# The packet filter loads its ruleset from the image rather than from /etc (§4.4).\n\
          #\n\
          # The rendered file is diff-gated under generated/; reading it where it was\n\
          # shipped means the running ruleset and the reviewed one cannot differ by\n\
          # anything that happened on the node.\n\n",
-    ));
+    );
     body.push_str(&section(
         "Service",
         &[
@@ -167,11 +167,7 @@ fn selinux(c: &Cluster) -> Rendered {
          SELINUXTYPE={}\n",
         s.compile_at, s.mode, s.policy_type
     );
-    Rendered::new(
-        node_path("selinux/config"),
-        vec!["CD-14", "CB-03"],
-        body,
-    )
+    Rendered::new(node_path("selinux/config"), vec!["CD-14", "CB-03"], body)
 }
 
 /// greenboot's deadline and its attempt count (§13.3).

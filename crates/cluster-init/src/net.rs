@@ -65,7 +65,12 @@ pub fn bind(interface: &str, wire: &Wire) -> Result<UdpSocket, InitError> {
 }
 
 /// Send one message to the group, scoped to this interface.
-pub fn send(socket: &UdpSocket, interface: &str, wire: &Wire, message: &Message) -> Result<(), InitError> {
+pub fn send(
+    socket: &UdpSocket,
+    interface: &str,
+    wire: &Wire,
+    message: &Message,
+) -> Result<(), InitError> {
     let index = interface_index(interface)?;
     let to = SocketAddrV6::new(wire.group, wire.port, 0, index);
     socket
@@ -127,11 +132,7 @@ pub fn discover_peer(
 /// that reaches it. A grant for a different machine is ignored rather than
 /// consumed: on a triangle the registrar answers two machines over two cables,
 /// and the answers are addressed by machine ID for exactly that reason.
-pub fn request_place(
-    interface: &str,
-    own: &Announcement,
-    wire: &Wire,
-) -> Result<Grant, InitError> {
+pub fn request_place(interface: &str, own: &Announcement, wire: &Wire) -> Result<Grant, InitError> {
     let socket = bind(interface, wire)?;
     let deadline = Instant::now() + wire.timeout;
     let mut buffer = [0u8; 4096];
@@ -236,18 +237,16 @@ fn is_timeout(e: &std::io::Error) -> bool {
 /// repository: a shared secret committed to a repository is a shared secret with
 /// everyone who can read it, and this one is public (§9.1).
 pub fn generate_secret(bytes: usize) -> Result<String, InitError> {
-    let raw = std::fs::read("/dev/urandom")
-        .map(|mut v| {
-            v.truncate(bytes);
-            v
-        })
+    use std::io::Read;
+
+    // `read_exact`, not `read`. `/dev/urandom` is an endless stream, so
+    // `std::fs::read` --- which reads to EOF --- never returns. The test for this
+    // function hung the whole suite until it was a `SIGTERM` rather than a
+    // failure, which is the least informative way a defect can present.
+    let mut raw = vec![0u8; bytes];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut raw))
         .map_err(|e| InitError::Io(format!("reading the kernel's random source: {e}")))?;
-    if raw.len() < bytes {
-        return Err(InitError::Io(format!(
-            "the kernel's random source returned {} bytes of {bytes}",
-            raw.len()
-        )));
-    }
     Ok(raw.iter().map(|b| format!("{b:02x}")).collect())
 }
 

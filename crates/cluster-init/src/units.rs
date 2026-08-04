@@ -38,10 +38,17 @@ pub struct Metrics {
 
 /// The `.network` unit for one mesh port.
 ///
+/// Eight parameters, which clippy objects to and which is the right shape here:
+/// every one of them is a fact this unit needs and none is derivable from the
+/// others. Bundling them into a struct would name the bundle after this one
+/// caller and hide that the peer's ordinal is discovered while the rest are
+/// rendered --- which is the distinction the whole module is about.
+///
 /// Matched by **name**, and the name is the one this machine just enumerated ---
 /// not a model fact and not persisted anywhere. That is the whole difference
 /// from the withdrawn §3.1: the file is written by the machine that read the
 /// name, so the two cannot disagree.
+#[allow(clippy::too_many_arguments)]
 pub fn mesh_unit(
     index: usize,
     peered: &PeeredPort,
@@ -66,10 +73,7 @@ pub fn mesh_unit(
          # enumerated, and the peer on the far end of this cable was discovered rather\n\
          # than declared (§3.1, §3.3). Direct-attached, so the segment has exactly two\n\
          # endpoints and §4.4 trusts it in full.\n\n",
-        peered.peer_ordinal,
-        peered.port.name,
-        link.lower,
-        link.higher
+        peered.peer_ordinal, peered.port.name, link.lower, link.higher
     );
     body.push_str(&format!("[Match]\nName={}\n\n", peered.port.name));
     body.push_str(&format!("[Link]\nMTUBytes={mtu}\n\n"));
@@ -199,7 +203,13 @@ pub fn loopback_unit(ordinal: u32, addressing: &Addressing) -> String {
 /// The split this file embodies is the whole design in one place: fleet facts
 /// are rendered and diff-gated, machine facts are discovered and written here,
 /// and neither file contains the other's.
-pub fn node_env(ordinal: u32, name: &str, role: &str, update_position: u32, loopback: &str) -> String {
+pub fn node_env(
+    ordinal: u32,
+    name: &str,
+    role: &str,
+    update_position: u32,
+    loopback: &str,
+) -> String {
     format!(
         "# What this machine worked out about itself at boot (§2.3, §4.1).\n\
          #\n\
@@ -233,14 +243,7 @@ pub fn mesh_units(
         out.push((
             mesh_unit_name(index),
             mesh_unit(
-                index,
-                peered,
-                ordinal,
-                &link,
-                &all_links,
-                addressing,
-                mtu,
-                metrics,
+                index, peered, ordinal, &link, &all_links, addressing, mtu, metrics,
             ),
         ));
     }
@@ -415,13 +418,26 @@ mod tests {
                 },
             ],
         };
-        let units = all_units(&classified, &peers(), 1, &addressing(), 9000, 1500, metrics()).unwrap();
+        let units = all_units(
+            &classified,
+            &peers(),
+            1,
+            &addressing(),
+            9000,
+            1500,
+            metrics(),
+        )
+        .unwrap();
         let names: Vec<&str> = units.iter().map(|(n, _)| n.as_str()).collect();
         assert!(names.contains(&"40-lan.network"));
         assert!(names.contains(&"50-spare.network"));
         let lan = &units.iter().find(|(n, _)| n == "40-lan.network").unwrap().1;
         assert!(lan.contains("DHCP=yes"));
-        let spare = &units.iter().find(|(n, _)| n == "50-spare.network").unwrap().1;
+        let spare = &units
+            .iter()
+            .find(|(n, _)| n == "50-spare.network")
+            .unwrap()
+            .1;
         assert!(spare.contains("Unmanaged=yes"));
         assert!(!spare.contains("DHCP"), "the spare gets no address");
     }
@@ -430,8 +446,8 @@ mod tests {
     /// caught by a broader match first.
     #[test]
     fn mesh_units_sort_before_the_lan_unit() {
-        assert!(mesh_unit_name(0) < "40-lan.network".to_string());
-        assert!(mesh_unit_name(1) < "40-lan.network".to_string());
+        assert!(mesh_unit_name(0).as_str() < "40-lan.network");
+        assert!(mesh_unit_name(1).as_str() < "40-lan.network");
     }
 
     #[test]

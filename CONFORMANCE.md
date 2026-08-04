@@ -28,6 +28,8 @@ model does not sanction.
 | `CB-04` | `build` | `T1` | A booted node refuses a write to the read-only system tree and accepts one to the writable state tree. |
 | `CB-05` | `build` | `T1` | The runtime each variant declares is active on a booted node and its socket answers a Docker API version request. |
 | `CB-06` | `build` | `T1` | On the measurement node the kernel's isolated CPU set is the set the model declares, simultaneous multithreading is off, and the scaling governor is the declared one. |
+| `CB-07` | `build` | `T1` | A booted node sorted its own ports into classes by the speeds their drivers report support for, took the ordinal its own hardware entitles it to, and wrote the addresses that follow from it --- none of which was in the image it booted. |
+| `CB-08` | `build` | `T1` | Exactly one role marker exists on a booted node, every unit belonging to another role is inactive rather than failed, and no unit belonging to this node's role was skipped. |
 
 ## control
 
@@ -61,6 +63,9 @@ model does not sanction.
 | `CD-14` | `build` | `T0` | The SSH daemon policy, the SELinux mode and type, and greenboot's deadline and attempt count are rendered from the model rather than declared a second time by an image build. |
 | `CD-15` | `build` | `T0` | The control plane is published on the tailnet by a rendered unit, and the tailnet access policy is rendered from the model's authorized logins and management prefix, advertising no mesh address. |
 | `CD-16` | `build` | `T0` | Every rendered artifact is valid in its own syntax: a JSON document parses and carries only the keys its schema defines, an interpreted script carries its interpreter on the first line, and every other file carries the generated provenance as a comment. |
+| `CD-17` | `build` | `T0` | The policy a node configures itself from is rendered, not compiled in: the class thresholds, the addressing bases, the route metrics, the discovery parameters and the role table all reach `cluster-init` from a diff-gated artifact, and none of them is a constant in the binary that reads them. |
+| `CD-18` | `build` | `T0` | Every role's firewall include is rendered, including the empty ones, and the common ruleset includes exactly one of them. One image carries one ruleset, so an accept that holds for one role only is a file that role's marker selects rather than a rule every machine applies. |
+| `CD-19` | `build` | `T0` | Every role's kernel-argument set is rendered, including the empty ones, and the base carries none of the isolation arguments. One image boots all three roles, so an isolcpus= in the image would isolate the storage node's cores too. |
 | `CD-10` | `build` | `T0` | The rendered client SSH configuration carries a devcontainer alias that resolves a session's current host from the control plane and falls back to the last known host when the control plane is unreachable. |
 
 ## hardware
@@ -84,6 +89,7 @@ model does not sanction.
 | `CI-02` | `build` | `T0` | Each variant installs the packages of the runtime it declares, sets DOCKER_HOST to that runtime's socket, installs no package distinctive of the other runtime, and installs every package the model declares for it. |
 | `CI-03` | `build` | `T0` | Each variant copies in the rendered tree of the node it is built for and no other node's, and the base takes its tree from a build argument because the rendered network configuration is per node. |
 | `CI-04` | `build` | `T0` | Every image build runs the bootc container lint, so an image that is not a valid bootc host fails before a tier boots it. |
+| `CI-07` | `build` | `T0` | Nothing the rendered tree contributes to the image is writable by anyone but root, and the build sets the mode rather than inheriting whatever umask rendered the tree. |
 
 ## lifecycle
 
@@ -113,6 +119,8 @@ model does not sanction.
 | `CN-01` | `build` | `T2` | Every node reaches every peer loopback with a datagram of the full mesh payload size and the do-not-fragment flag set, so a path that will not carry jumbo frames fails rather than answering a smaller probe. |
 | `CN-02` | `build` | `T2` | When one mesh link loses carrier, the nodes it joined remain reachable by the transit route through the remaining peer, and the path taken changes. |
 | `CN-03` | `build` | `T2` | The loaded packet filter on every node defaults to drop on input and carries every flow the model declares for that node. |
+| `CN-04` | `build` | `T2` | Each node learned which peer is on the far end of each of its mesh ports, and the two ends of every cable took the two addresses of one /31 with neither told which to take. |
+| `CN-05` | `build` | `T2` | The registrar assigned ordinals in the order machines registered, returns the same assignment to a machine that asks twice, and hands a released ordinal to the next machine rather than a fresh one. |
 
 ## reclaim
 
@@ -168,6 +176,7 @@ list; a `Result` over anything else fails the gate.
 
 | Error | Crate | Sanctioned by | Reports |
 | --- | --- | --- | --- |
+| `InitError` | `cluster-init` | `CB-07` | A machine could not work out what it is: ports that classify into the wrong counts, two bulk disks or none, an ordinal outside the fleet, a registrar that did not answer, a rendered policy missing a key. None of these is recoverable in the sense of carrying on anyway --- a node that started its services without an ordinal would look healthy while being wrong --- so every one of them fails the boot rather than degrading it (SPEC.md §3.1, §21.11). |
 | `ProbeError` | `cluster-health` | `CB-01` | A declared health probe could not be executed --- a missing binary, a permission denial, a socket that is not there. It never reports that a check failed: a failed check is an answer, and this is the absence of one. SPEC.md §13.2 halts the rollout on an unknown rather than treating it as either answer, so the two are different types and never collapse. |
 | `RolloutError` | `cluster-updater` | `CU-01` | A rollout stage could not be completed: a registry that would not answer, a signature that did not verify, an upgrade that would not apply. It deliberately does not cover the ordinary outcomes --- "this node is not next" and "a peer is unhealthy" are decisions, the first being the normal middle of a rollout and the second a halt that alerts. |
 | `ApiError` | `cluster-ctl` | `CC-02` | One of five conditions a caller of the control plane can act on: no Tailscale identity, an identity the model does not permit, an identifier that names nothing, a lifecycle transition the policy refuses, or a session store that cannot be read. There is deliberately no catch-all variant --- a 500 is the absence of a diagnosis, and this type exists so there is always one. |

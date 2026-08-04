@@ -6,20 +6,22 @@ Feature: definition
   rather than only to documentation (SPEC.md §7.2).
 
   @CD-01 @build
-  Scenario: Interfaces are matched by MAC, never by kernel name
-    Given a model declaring four MAC addresses per node
-    When the network units are rendered
-    Then every unit for a physical interface matches on MACAddress
-    And every declared MAC appears in exactly one unit
-    And no unit for a physical interface matches on Name
+  Scenario: Ports are classified by link speed, and no MAC is rendered
+    Given a model declaring an interface class per link speed
+    When the tree is rendered
+    Then no rendered artifact carries a MAC address
+    And the rendered policy carries the speed threshold for each class
+    And the mesh threshold is above the LAN one
+    And the LAN class is addressed by DHCP
 
   @CD-02 @build
-  Scenario: Each node holds a direct and a transit route to every peer
-    Given a direct triangle with one link per pair of nodes
-    When the network units are rendered
-    Then each node has a route to every peer loopback at the direct metric
-    And each node has a route to every peer loopback at the transit metric
-    And the transit route's gateway is the remaining peer's link address
+  Scenario: The routing policy is rendered rather than compiled in
+    Given a model declaring route metrics and addressing bases
+    When the tree is rendered
+    Then the rendered policy carries both route metrics
+    And it carries the loopback and link bases the addresses derive from
+    And the direct metric is below the transit metric
+    And forwarding is enabled, so a transit route has something to transit
 
   @CD-03 @build
   Scenario: The firewall drops by default and accepts only declared flows
@@ -30,12 +32,13 @@ Feature: definition
     And the forward chain accepts only when both addresses are mesh addresses
 
   @CD-04 @build
-  Scenario: Names resolve from the node table with no resolver
-    Given nodes with declared loopbacks and management addresses
+  Scenario: Every name resolves from the ordinals, with no resolver
+    Given a fleet of ordinals and a cluster domain
     When the hosts file is rendered
-    Then every node's mesh name resolves to its loopback
-    And every node's management name resolves to its management address
-    And no name appears that the model does not declare
+    Then every ordinal resolves at its fully-qualified and short name
+    And the bare cluster name resolves to the ordinal holding storage
+    And no management name appears, because those addresses come from DHCP
+    And no name appears that the ordinals do not derive
 
   @CD-05 @build
   Scenario: Every Quadlet volume mount carries its relabel flag
@@ -44,12 +47,12 @@ Feature: definition
     Then every Volume line ends in the relabel flag its model row declares
 
   @CD-06 @build
-  Scenario: Isolation kernel arguments render on the measurement node alone
-    Given one variant declaring an isolated CPU set
+  Scenario: Isolation is a role's kernel argument and never the image's
+    Given one role declaring an isolated CPU set
     When the kernel arguments are rendered
-    Then every node carries the base kernel arguments
-    And only the measurement node carries the isolation set
-    And its isolcpus argument names the CPUs the variant declares
+    Then the base set carries no isolation argument
+    And the isolating role's own set names the CPUs it declares
+    And exactly one role declares isolation
 
   @CD-07 @build
   Scenario: The kickstart carries the declared layout and no secret
@@ -65,7 +68,8 @@ Feature: definition
     When the systemd units are rendered
     Then the updater timer carries the declared interval and jitter
     And the greenboot check carries the declared deadline
-    And the updater environment carries this node's position and its peers' endpoints
+    And the updater environment carries every ordinal's health endpoint
+    And it carries no position, which the image cannot know
     And every declared drain budget appears with its class and its exceed action
 
   @CD-09 @build
@@ -133,3 +137,26 @@ Feature: definition
     Then every JSON document parses and carries only the keys its schema defines
     And every interpreted script carries its interpreter on the first line
     And every other file carries the generated provenance as a comment
+
+  @CD-17 @build
+  Scenario: A node configures itself from a rendered policy, not from constants
+    Given class thresholds, addressing bases, metrics and a role table in the model
+    When the node policy is rendered
+    Then it carries every value cluster-init needs to configure a machine
+    And the binary that reads it declares none of them itself
+
+  @CD-18 @build
+  Scenario: Each role's firewall include is rendered, empty ones included
+    Given a firewall rule restricted to one role
+    When the packet filter is rendered
+    Then the common ruleset includes exactly one role file
+    And a file is rendered for every role, including those adding no rules
+    And the restricted rule appears only in its own role's file
+
+  @CD-19 @build
+  Scenario: Each role's kernel arguments are rendered, empty ones included
+    Given one role declaring an isolated CPU set and two declaring none
+    When the kernel arguments are rendered
+    Then a set is rendered for every role
+    And the isolating role's set carries its arguments
+    And the sets for the other roles are empty rather than absent

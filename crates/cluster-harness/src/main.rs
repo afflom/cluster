@@ -89,6 +89,7 @@ fn main() -> ExitCode {
             &format!("{}.qcow2", node.name),
             &fixture.firmware_code.display().to_string(),
             &fixture.firmware_vars.display().to_string(),
+            None,
         );
         println!("{}: qemu-system-x86_64 {}", node.name, args.join(" "));
         if tier == Tier::T1 {

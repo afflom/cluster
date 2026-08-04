@@ -143,6 +143,7 @@ COPY generated/node/greenboot.conf /etc/greenboot/greenboot.conf
 COPY generated/node/sshrc /etc/ssh/sshrc
 RUN chmod 0644 /etc/ssh/sshrc
 
+
 # Quadlets ship inside the image under /usr/share/containers/systemd/ and
 # materialize as units at boot --- the bootc grain exactly (§8.2). Every role's
 # ship; each one that belongs to a role carries a ConditionPathExists= naming
@@ -162,6 +163,23 @@ COPY generated/node/exports /etc/exports
 
 COPY generated/node/libexec/ /usr/libexec/cluster/
 RUN chmod 0755 /usr/libexec/cluster/*
+
+# Nothing the rendered tree contributes is writable by anyone but root.
+#
+# `COPY` preserves the mode of the file on the build host, so a developer with a
+# permissive umask rendered the tree 0666 and the image shipped a world-writable
+# `policy.json` --- the one file §12.3 calls the only thing between an unattended
+# node and an arbitrary image. systemd said so about the units beside it
+# ("marked world-writable, proceeding anyway") and nothing failed.
+#
+# The renderer now sets 0644 too. This is here as well because it holds whatever
+# wrote the tree, and because a mode is not something to be right about once.
+RUN chmod -R go-w /usr/lib/cluster /usr/lib/systemd/system /usr/share/containers/systemd \
+      /etc/containers /usr/lib/sysctl.d /usr/lib/bootc/kargs.d \
+      /usr/lib/systemd/journald.conf.d /etc/ssh/sshd_config.d /etc/selinux/config \
+      /etc/greenboot/greenboot.conf /etc/zot /etc/prometheus /etc/alertmanager \
+      /etc/garage /etc/grafana/provisioning /etc/exports /usr/libexec/cluster \
+      /usr/lib/greenboot/check/required.d
 
 # SELinux policy is compiled at build time and shipped, never compiled at runtime
 # on a read-only root (§8.3).

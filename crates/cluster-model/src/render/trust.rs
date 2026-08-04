@@ -98,13 +98,13 @@ fn registries(c: &Cluster) -> Rendered {
     let local = format!("{}:{}", host.loopback, r.port);
 
     let mut body = String::new();
-    body.push_str(&format!(
+    body.push_str(
         "# Where a node pulls from. The local registry first, then the fallbacks.\n\
          #\n\
          # Zot is unreachable during the storage node's own reboot --- by design --- and a pull\n\
          # that failed then would turn §14.2's stated window into an outage. The\n\
-         # fallbacks are what make the window a degradation instead.\n\n"
-    ));
+         # fallbacks are what make the window a degradation instead.\n\n",
+    );
 
     body.push_str("unqualified-search-registries = [\"ghcr.io\", \"docker.io\"]\n\n");
 

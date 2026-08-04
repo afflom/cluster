@@ -20,27 +20,28 @@ jobs:
   build:
     runs-on: ubuntu-latest
     outputs:
-      n1: ${{ steps.push.outputs.n1 }}
-      n2: ${{ steps.push.outputs.n2 }}
-      n3: ${{ steps.push.outputs.n3 }}
+      node: ${{ steps.push.outputs.node }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # Hosted runners provide roughly 14 GB free, which does not hold three
-      # bootc disk images plus a toolchain (§9.4).
+      # Hosted runners provide roughly 14 GB free, which does not hold a bootc
+      # disk image plus a toolchain without help (§9.4).
       - name: Reclaim disk
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /usr/local/lib/node_modules
           df -h /
 
       - name: Build the node binaries
         run: |
           cargo build --release \
-            -p cluster-health -p cluster-updater -p cluster-ctl -p devcontainer-agent
+            -p cluster-health -p cluster-updater -p cluster-ctl \
+            -p devcontainer-agent -p cluster-init
           cp target/release/cluster-health target/release/cluster-updater \
-             target/release/cluster-ctl target/release/devcontainer-agent .
+             target/release/cluster-ctl target/release/devcontainer-agent \
+             target/release/cluster-init .
 
       - uses: redhat-actions/podman-login@v1
         with:
@@ -49,61 +50,53 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: push
-        name: Build and push, capturing each digest
+        name: Build and push, capturing the digest
         run: |
           set -euo pipefail
-          for node in n1 n2 n3; do
-            # §8.1 puts the rendered networkd and hosts files in the base, so the
-            # base is built per node. The variant then layers its own delta.
-            podman build --platform linux/amd64 --build-arg NODE="$node" \
-              -f images/base/Containerfile -t "cluster-base-$node" .
-            podman build --platform linux/amd64 --build-arg BASE="localhost/cluster-base-$node" \
-              -f "images/$node/Containerfile" \
-              -t "ghcr.io/${{ github.repository }}/$node:ci-${{ github.sha }}" .
-            # Retry with backoff. GHCR answers a secondary rate limit as a 403
-            # whose *body* says to wait and try again --- the surface looks like
-            # a permission failure and is not one, which cost an hour to find.
-            # Three images of a few hundred megabytes each, pushed back to back,
-            # reach that limit on a repository with any push activity.
-            #
-            # GitHub's own guidance for a secondary limit is to wait and retry,
-            # so that is what this does rather than failing a build over a
-            # throttle.
-            pushed=false
-            for attempt in 1 2 3 4 5; do
-              # `--digestfile` records the digest of what the *registry* now
-              # holds. `podman inspect .Digest` gives the local manifest's
-              # digest, which is not the same value and is not resolvable by a
-              # puller --- that mismatch is what made the tiers ask for a
-              # manifest ghcr.io had never heard of.
-              if podman push --digestfile "/tmp/$node.digest" \
-                   "ghcr.io/${{ github.repository }}/$node:ci-${{ github.sha }}"; then
-                pushed=true
-                break
-              fi
-              delay=$(( attempt * 30 ))
-              echo "::warning title=Push retry::$node push attempt $attempt failed;" \
-                   "waiting ${delay}s. A 403 from ghcr.io is usually a secondary" \
-                   "rate limit rather than a permission problem."
-              sleep "$delay"
-            done
-            if [ "$pushed" != true ]; then
-              echo "::error::$node could not be pushed after 5 attempts." >&2
-              exit 1
+          node=node
+          # One image (§8.4). There were three, differing only in which units
+          # they enabled, and the loop that built them is gone with them --- as
+          # is the rate limit three back-to-back pushes used to reach.
+          podman build --platform linux/amd64 \
+            -f images/node/Containerfile \
+            -t "ghcr.io/${{ github.repository }}/$node:ci-${{ github.sha }}" .
+
+          # Retry with backoff. GHCR answers a secondary rate limit as a 403
+          # whose *body* says to wait and try again --- the surface looks like a
+          # permission failure and is not one, which cost an hour to find.
+          #
+          # GitHub's own guidance for a secondary limit is to wait and retry, so
+          # that is what this does rather than failing a build over a throttle.
+          pushed=false
+          for attempt in 1 2 3 4 5; do
+            # `--digestfile` records the digest of what the *registry* now holds.
+            # `podman inspect .Digest` gives the local manifest's digest, which
+            # is not the same value and is not resolvable by a puller --- that
+            # mismatch is what made the tiers ask for a manifest ghcr.io had
+            # never heard of.
+            if podman push --digestfile "/tmp/$node.digest" \
+                 "ghcr.io/${{ github.repository }}/$node:ci-${{ github.sha }}"; then
+              pushed=true
+              break
             fi
-            digest=$(cat "/tmp/$node.digest")
-            # Confirm the registry can actually resolve it before anything
-            # downstream is told to boot it. §9.2 promotes *that digest*, so a
-            # digest nothing can pull is a validation that would silently be
-            # about a different artifact.
-            skopeo inspect --raw \
-              "docker://ghcr.io/${{ github.repository }}/$node@$digest" >/dev/null
-            echo "$node=$digest" >> "$GITHUB_OUTPUT"
-            # A pause between images. The limit is on the rate, and three
-            # back-to-back pushes are what reaches it; this costs a minute and
-            # removes the usual cause of the retries above.
-            sleep 20
+            delay=$(( attempt * 30 ))
+            echo "::warning title=Push retry::push attempt $attempt failed;" \
+                 "waiting ${delay}s. A 403 from ghcr.io is usually a secondary" \
+                 "rate limit rather than a permission problem."
+            sleep "$delay"
           done
+          if [ "$pushed" != true ]; then
+            echo "::error::the image could not be pushed after 5 attempts." >&2
+            exit 1
+          fi
+          digest=$(cat "/tmp/$node.digest")
+          # Confirm the registry can actually resolve it before anything
+          # downstream is told to boot it. §9.2 promotes *that digest*, so a
+          # digest nothing can pull is a validation that would silently be about
+          # a different artifact.
+          skopeo inspect --raw \
+            "docker://ghcr.io/${{ github.repository }}/$node@$digest" >/dev/null
+          echo "node=$digest" >> "$GITHUB_OUTPUT"
 
   t1:
     # One node boots under OVMF and the health predicate passes (§10.2).
@@ -116,6 +109,17 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just
+
+      # One image carries every role's packages (§8.4, §21.14), so it is around
+      # 5 GB where the per-node images were about 2. Pulling it and then writing
+      # a disk image from it does not fit in the ~14 GB a hosted runner starts
+      # with, and the failure surfaces as an opaque `no space left on device`
+      # inside bootc-image-builder rather than as anything about size.
+      - name: Reclaim disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /usr/local/lib/node_modules
+          df -h /
 
       - name: Install the guest tooling
         run: |
@@ -130,7 +134,7 @@ jobs:
           # By digest, not by tag. §9.2: build once, validate *that digest*,
           # promote that digest --- a tag could have moved between the push and
           # here, and then the tier would validate something else.
-          image="ghcr.io/${{ github.repository }}/n3@${{ needs.build.outputs.n3 }}"
+          image="ghcr.io/${{ github.repository }}/node@${{ needs.build.outputs.node }}"
 
           # bootc-image-builder reads root's container storage and no longer
           # pulls anything itself, so the image has to be in *root's* storage
@@ -168,7 +172,7 @@ jobs:
           fi
           exit "$code"
         env:
-          CLUSTER_TARGET_DIGEST: ${{ needs.build.outputs.n3 }}
+          CLUSTER_TARGET_DIGEST: ${{ needs.build.outputs.node }}
           # No firmware path here. The harness searches the places distributions
           # put OVMF, because pinning one meant T1 skipped on every hosted runner
           # --- and reported that /dev/kvm was absent when KVM was fine and only
@@ -176,9 +180,10 @@ jobs:
 
   t2:
     # Three nodes, mesh wired, failover, and a full simulated rollout with drain
-    # and rollback. Self-hosted on n1: real KVM, 2 TB of disk, no emulation tax.
+    # and rollback. Self-hosted on the storage node: real KVM, 2 TB of disk, no
+    # emulation tax.
     #
-    # Not circular: n1 runs the *previously promoted* image while validating the
+    # Not circular: it runs the *previously promoted* image while validating the
     # candidate in guests (§9.4).
     #
     # Gated on the fleet existing. Until a node is registered as a runner there
@@ -191,7 +196,7 @@ jobs:
     # Nothing is promoted on a skipped tier: `promote.yml` refuses a commit
     # whose T2 did not succeed, so this gate cannot become a way past T2.
     needs: build
-    # Never for a fork. §9.1 derives "T2 may run on n1" from fork pull requests
+    # Never for a fork. §9.1 derives "T2 may run on the storage node" from fork PRs
     # not existing, which was true only while the repository was private. It is
     # public, so a fork's pull request would otherwise schedule that fork's code
     # on a node holding the registry, the object store and every devcontainer.
@@ -211,7 +216,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target/harness
-          image="ghcr.io/${{ github.repository }}/n1@${{ needs.build.outputs.n1 }}"
+          image="ghcr.io/${{ github.repository }}/node@${{ needs.build.outputs.node }}"
           sudo podman login ghcr.io \
             -u '${{ github.actor }}' -p '${{ secrets.GITHUB_TOKEN }}'
           sudo podman pull "$image"
@@ -229,18 +234,18 @@ jobs:
           # In this repository's own namespace, so the reference looks exactly
           # like one the node would accept and only the signature distinguishes
           # it. A foreign reference would prove nothing (§12.3).
-          podman tag "ghcr.io/${{ github.repository }}/n3:ci-${{ github.sha }}" \
-            "ghcr.io/${{ github.repository }}/n3:unsigned-${{ github.sha }}"
-          podman push "ghcr.io/${{ github.repository }}/n3:unsigned-${{ github.sha }}"
+          podman tag "ghcr.io/${{ github.repository }}/node:ci-${{ github.sha }}" \
+            "ghcr.io/${{ github.repository }}/node:unsigned-${{ github.sha }}"
+          podman push "ghcr.io/${{ github.repository }}/node:unsigned-${{ github.sha }}"
 
-      # No skip path. On n1 KVM is guaranteed, so its absence means the node is
+      # No skip path. On the storage node KVM is guaranteed, so its absence means it is
       # broken rather than the harness being portable --- and treating that as a
       # skip would let a broken CI host promote images (§9.4).
       - run: just t2
         env:
-          CLUSTER_TARGET_DIGEST: ${{ needs.build.outputs.n1 }}
-          CLUSTER_PREVIOUS_STABLE: ghcr.io/${{ github.repository }}/n1:stable
-          CLUSTER_UNSIGNED_IMAGE: ghcr.io/${{ github.repository }}/n3:unsigned-${{ github.sha }}
+          CLUSTER_TARGET_DIGEST: ${{ needs.build.outputs.node }}
+          CLUSTER_PREVIOUS_STABLE: ghcr.io/${{ github.repository }}/node:stable
+          CLUSTER_UNSIGNED_IMAGE: ghcr.io/${{ github.repository }}/node:unsigned-${{ github.sha }}
 
   # Whether T2 ran, said out loud. A tier that quietly did not run is the
   # vacuous gate in its most convincing disguise (§9.4).
@@ -258,7 +263,7 @@ jobs:
             skipped)
               echo "::notice title=T2 did not run::The fleet is not registered as a \
               runner, so nothing was tested at T2. Set the CLUSTER_FLEET_ONLINE \
-              repository variable once n1 has a runner. Promotion refuses a commit \
+              repository variable once the storage node has a runner. Promotion refuses a commit \
               whose T2 did not succeed, so nothing can be promoted on this (SPEC.md \
               §9.4, §22)."
               ;;

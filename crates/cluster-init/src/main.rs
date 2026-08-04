@@ -33,7 +33,9 @@ use cluster_init::links::{self, Classified, Port, Thresholds};
 use cluster_init::net::{self, Wire};
 use cluster_init::role::{self, Device, Registry};
 use cluster_init::units::{self, Metrics, PeeredPort};
-use cluster_init::{InitError, POLICY_PATH, REGISTRY_PATH, SECRET_PATH, RUNTIME_DIR, RUNTIME_NETWORK_DIR};
+use cluster_init::{
+    InitError, POLICY_PATH, REGISTRY_PATH, RUNTIME_DIR, RUNTIME_NETWORK_DIR, SECRET_PATH,
+};
 
 fn main() -> ExitCode {
     match run() {
@@ -75,7 +77,14 @@ fn run() -> Result<String, InitError> {
         let ordinal = detected.ordinal.ok_or_else(|| {
             InitError::Config("the self-detected role pins no ordinal (§2.3.2)".into())
         })?;
-        let peers = serve_and_discover(&config, &classified, &machine_id, ordinal, &detected.id, &wire)?;
+        let peers = serve_and_discover(
+            &config,
+            &classified,
+            &machine_id,
+            ordinal,
+            &detected.id,
+            &wire,
+        )?;
         (ordinal, detected.id.clone(), peers)
     } else {
         let (grant, peers) = join(&classified, &machine_id, &wire)?;
@@ -203,7 +212,13 @@ fn observed_ports() -> Result<Vec<Port>, InitError> {
 /// Every whole block device, with the one carrying root marked (§2.3.1).
 fn observed_devices() -> Result<Vec<Device>, InitError> {
     let output = Command::new("lsblk")
-        .args(["--noheadings", "--nodeps", "--bytes", "--output", "PATH,SIZE,MOUNTPOINTS"])
+        .args([
+            "--noheadings",
+            "--nodeps",
+            "--bytes",
+            "--output",
+            "PATH,SIZE,MOUNTPOINTS",
+        ])
         .output()
         .map_err(|e| InitError::Io(format!("running lsblk: {e}")))?;
     let text = String::from_utf8_lossy(&output.stdout);
@@ -215,9 +230,9 @@ fn observed_devices() -> Result<Vec<Device>, InitError> {
         let (Some(path), Some(size)) = (fields.next(), fields.next()) else {
             continue;
         };
-        let bytes = size.parse().map_err(|_| {
-            InitError::Hardware(format!("lsblk reported size `{size}` for {path}"))
-        })?;
+        let bytes = size
+            .parse()
+            .map_err(|_| InitError::Hardware(format!("lsblk reported size `{size}` for {path}")))?;
         out.push(Device {
             is_boot: root_disk.as_deref() == Some(path),
             path: path.to_string(),
@@ -257,8 +272,7 @@ fn root_disk() -> Result<Option<String>, InitError> {
 fn role_firewall_include(role: &str) -> Result<(), InitError> {
     let source = format!("/usr/lib/cluster/nftables-role-{role}.conf");
     let target = Path::new(RUNTIME_DIR).join("nftables-role.conf");
-    std::fs::copy(&source, &target)
-        .map_err(|e| InitError::Io(format!("placing {source}: {e}")))?;
+    std::fs::copy(&source, &target).map_err(|e| InitError::Io(format!("placing {source}: {e}")))?;
     Ok(())
 }
 
@@ -284,7 +298,12 @@ fn apply_role_kargs(role: &str) -> Result<(), InitError> {
         .to_string();
 
     let mut command = Command::new("bootc");
-    command.args(["loader-entries", "set-options-for-source", "--source", "cluster-role"]);
+    command.args([
+        "loader-entries",
+        "set-options-for-source",
+        "--source",
+        "cluster-role",
+    ]);
     if !options.is_empty() {
         command.args(["--options", &options]);
     }
@@ -360,15 +379,41 @@ fn serve_and_discover(
         // Persist before the next port. A grant that was sent and not recorded
         // would be handed out again to a different machine after a reboot, and
         // two machines would answer to one name.
-        write_private(Path::new(REGISTRY_PATH), &serde_json::to_string_pretty(&registry).map_err(|e| InitError::Registry(e.to_string()))?)?;
+        write_private(
+            Path::new(REGISTRY_PATH),
+            &serde_json::to_string_pretty(&registry)
+                .map_err(|e| InitError::Registry(e.to_string()))?,
+        )?;
 
         let peer_ordinal = match granted.first() {
             Some(grant) => grant.ordinal,
-            // Nothing asked on this cable, so the machine on it already has a
-            // place. Ask it who it is.
-            None => {
-                discovery_ordinal(&net::discover_peer(&port.name, &own, wire)?.peer)?
-            }
+            // Nothing asked on this cable, so either the machine on it already
+            // has a place --- ask it who it is --- or there is no machine on it
+            // yet.
+            None => match net::discover_peer(&port.name, &own, wire) {
+                Ok(found) => discovery_ordinal(&found.peer)?,
+                // **Not fatal, and this is the difference between the registrar
+                // and everyone else.** The registrar knows its ordinal from its
+                // own disks (§2.3.1), so a cable with nothing on the far end
+                // costs it that one link's addresses and nothing else. §12.1
+                // promises exactly this: a machine powered on before the others
+                // comes up and they join it, rather than the first machine
+                // refusing to boot because it is first.
+                //
+                // A machine that is *not* the registrar cannot do this. It has
+                // no ordinal without an answer, so `join` below treats the same
+                // silence as fatal.
+                Err(InitError::Discovery(reason)) => {
+                    eprintln!(
+                        "cluster-init: {} has no peer yet ({reason}); leaving it \
+                         unaddressed. The link takes its addresses when the machine \
+                         on the far end registers (§3.3, §12.1)",
+                        port.name
+                    );
+                    continue;
+                }
+                Err(e) => return Err(e),
+            },
         };
         peers.push(PeeredPort {
             port: port.clone(),

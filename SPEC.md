@@ -45,11 +45,11 @@ discovered before money is spent on them.
 Each node has two. A fourth node needs a switch and a different `topology` kind
 in `model/network.toml`.
 
-**One migration target.** §14 moves devcontainers off `n2` during its update. The
-only node that can receive them is `n1`, because `n3` is reserved (§2.3) and
+**One migration target.** §14 moves devcontainers off the compute node during its update. The
+only node that can receive them is the storage node, because the testbed is reserved (§2.3) and
 receiving work would void the guarantee it exists to provide. There is therefore
-no drain path for `n1`'s own storage services — they are bound to a disk that is
-physically inside `n1` — and §14.2 states the unavailability window rather than
+no drain path for the storage node's own storage services — they are bound to a disk that is
+physically inside the storage node — and §14.2 states the unavailability window rather than
 pretending it away.
 
 ---
@@ -69,21 +69,21 @@ Every node is a Supermicro SYS-E300-8D (X10SDV-4C-TLN2F):
 | Network | 2 × 10GBase-T (Intel X552), 2 × 1GbE, dedicated IPMI port |
 | Management | IPMI 2.0, SOL, virtual media |
 
-`n1` carries one additional 2 TB 2.5" SATA HDD.
+the storage node carries one additional 2 TB 2.5" SATA HDD.
 
 The absence of AVX-512 bounds what any measurement generalizes to. The absence of
-turbo headroom — base and max clock are the same figure — is why `n3` is usable
+turbo headroom — base and max clock are the same figure — is why the testbed is usable
 as a measurement host: a part with a flat clock has no boost algorithm to
 introduce variance.
 
 ### 2.2 Physical drive mounting
 
-The E300-8D chassis provides limited internal mounting and `n1` needs two SATA
-devices plus the M.2. **Verified physically before `n1` is provisioned.**
+The E300-8D chassis provides limited internal mounting and the storage node needs two SATA
+devices plus the M.2. **Verified physically before the storage node is provisioned.**
 
 - **Primary:** both SATA devices internal; the SSD caches the HDD (§5.3).
 - **Fallback:** the HDD takes the bay and the cache device becomes a 64 GiB
-  partition of `n1`'s M.2. NVMe is the faster medium; the reason it is not the
+  partition of the storage node's M.2. NVMe is the faster medium; the reason it is not the
   default is contention with the OS and `/var`, not performance.
 
 Either outcome is one line in `model/cluster.toml`. Nothing downstream branches.
@@ -154,10 +154,10 @@ re-verified by `CH-` on every hardware smoke run via `ipmitool` and
 
 | Setting | Value | Why |
 | --- | --- | --- |
-| Intel VT-x | Enabled | `n1` runs T2 guests; without it QEMU falls back to TCG |
+| Intel VT-x | Enabled | the storage node runs T2 guests; without it QEMU falls back to TCG |
 | Intel VT-d | Enabled | required for device assignment; harmless otherwise |
-| Hyper-Threading | Enabled | `n3` disables SMT via `nosmt` so isolation is expressed in one place |
-| C-States | Enabled | `n3` constrains them via kernel cmdline; BIOS stays permissive so control lives in the model |
+| Hyper-Threading | Enabled | the testbed disables SMT via `nosmt` so isolation is expressed in one place |
+| C-States | Enabled | the testbed constrains them via kernel cmdline; BIOS stays permissive so control lives in the model |
 | Restore on AC Power Loss | Power On | headless cluster, no operator after an outage |
 | Boot order | M.2 first, then virtual media | virtual media is the recovery path and must not be default |
 | Console Redirection | Enabled, COM2/SOL, 115200 8N1 | matches `console=ttyS1,115200` |
@@ -171,8 +171,8 @@ limitation, recorded rather than hidden: the cluster tolerates hard loss because
 root is read-only, `/var` is journalled XFS, and the only write-heavy device is
 under a **writethrough** cache (§5.3) with no dirty-data window.
 
-Nodes power on after AC restore. `n1` carries a 30-second BMC power-on delay so
-the storage node is not competing for inrush, and so `n2` and `n3` find their
+Nodes power on after AC restore. the storage node carries a 30-second BMC power-on delay so
+the storage node is not competing for inrush, and so the compute node and the testbed find their
 registry and NFS already answering.
 
 ---
@@ -250,6 +250,18 @@ The announcement carries the machine ID and, once known, the ordinal and role.
 What comes back identifies the machine at the other end of *that specific cable*,
 which is the fact the addressing in §4.1 needs and the only fact a node cannot
 derive on its own.
+
+**An unpeered port is not the same failure for every machine.** The storage node
+knows its ordinal from its own disks (§2.3.1), so a cable with nothing on the far
+end costs it that one link's addresses and nothing else: it comes up, serves the
+registrar, and the link takes its addresses when the machine on the other end
+registers. Any other machine has no ordinal without an answer, so the same
+silence is fatal to it — there is no address it could take and no role it could
+start.
+
+That asymmetry is what makes §12.1's promise true. The first machine powered on
+is necessarily alone, and a system where being first was an error could not be
+brought up at all.
 
 Discovery is not authentication. A rogue device spliced into a direct-attached
 cable inside the chassis' own rack is outside this threat model, as §4.4 already
@@ -364,7 +376,7 @@ discovered"; it is that a file is rendered when its content is a fact about the
 | Plane | Accepted |
 | --- | --- |
 | `mgmt` | 22/tcp and 9100/tcp from the LAN prefix; ICMP echo |
-| `tailscale0` | 22/tcp; 443/tcp to the control plane on `n1`; established |
+| `tailscale0` | 22/tcp; 443/tcp to the control plane on the storage node; established |
 | mesh | all traffic between the six link addresses and three loopbacks |
 | lo | all |
 
@@ -374,7 +386,7 @@ two endpoints per segment. That trust is a property of §4.1's topology and is w
 
 ### 4.5 Off-LAN access
 
-Tailscale on all three nodes, tagged `tag:cluster`, `n1` advertising the
+Tailscale on all three nodes, tagged `tag:cluster`, the storage node advertising the
 management subnet. Auth keys are ephemeral single-use, delivered at install
 (§12.2). ACLs permit only the operator's tagged devices; the mesh is never
 advertised.
@@ -400,11 +412,11 @@ SATA SSD, per role:
 
 | Node | Use |
 | --- | --- |
-| `n1` | LVM PV, cache pool for `vg_data` |
-| `n2` | xfs at `/var/lib/containers` and `/var/lib/docker` |
-| `n3` | xfs at `/var/bench` |
+| storage | LVM PV, cache pool for `vg_data` |
+| compute | xfs at `/var/lib/containers` and `/var/lib/docker` |
+| testbed | xfs at `/var/bench` |
 
-`n1` HDD: LVM PV, origin LV `lv_data` in `vg_data`, cached by the SSD.
+the storage node HDD: LVM PV, origin LV `lv_data` in `vg_data`, cached by the SSD.
 
 ### 5.2 The bootc filesystem contract
 
@@ -441,14 +453,14 @@ must not require rebuilding an out-of-tree module inside an immutable host.
 | --- | --- | --- |
 | Registry | **Zot** | hosts this repository's images, mirrored from GHCR; pull-through caches `docker.io` and `ghcr.io` |
 | Object store | **Garage** | S3-compatible; `sccache` backend, replaces `actions/cache` WAN round-trips |
-| NFS | `nfs-utils` | devcontainer durable volumes and home directories, exported to `n2` only |
+| NFS | `nfs-utils` | devcontainer durable volumes and home directories, exported to the compute node only |
 | Control plane | `cluster-ctl` | session registry, rollout state, API (§16) |
 
 Zot syncs `ghcr.io/afflom/cluster/*` every 5 minutes. Nodes poll Zot for update
 targets (§13.1) and fall back to GHCR directly when Zot is unreachable — which it
-is, by design, during `n1`'s own reboot.
+is, by design, during the storage node's own reboot.
 
-NFS is exported to `n2`'s loopback alone with `sec=sys`, acceptable only because
+NFS is exported to the compute node's loopback alone with `sec=sys`, acceptable only because
 §4.4 makes the mesh a closed segment.
 
 ### 5.5 Retention
@@ -694,7 +706,7 @@ refusing to schedule a self-hosted job for a pull request from a fork.
 follow:
 
 1. **Fork pull requests do not exist**, so self-hosted runners are not exposed to
-   untrusted code. This is the precondition that makes T2 on `n1` acceptable.
+   untrusted code. This is the precondition that makes T2 on the storage node acceptable.
    Going public would require moving T2 to hosted runners.
 2. **Nodes authenticate to pull.** A fine-grained PAT with `read:packages` only,
    delivered at install into `/etc/containers/auth.json` (§12.2).
@@ -744,11 +756,11 @@ promotions.
 | --- | --- | --- |
 | build | GitHub-hosted | faster than a D-1518; keeps the cluster out of its own critical path |
 | T0, T1 | GitHub-hosted | static and cheap; T1 needs KVM (below) |
-| T2 | self-hosted on `n1` | real KVM, 2 TB of disk, no emulation tax |
+| T2 | self-hosted on the storage node | real KVM, 2 TB of disk, no emulation tax |
 | promote | GitHub-hosted | the publish path never depends on the cluster |
 | Pages build | GitHub-hosted | §16.3 |
 
-T2 on `n1` is not circular: `n1` runs the *previously promoted* image while
+T2 on the storage node is not circular: the storage node runs the *previously promoted* image while
 validating the candidate in guests.
 
 **KVM.** GitHub documents nested virtualization on hosted runners as technically
@@ -766,9 +778,9 @@ overlays, and the workflow reclaims space by removing preinstalled toolchains.
 
 | Node | Count | Labels | Mode |
 | --- | --- | --- | --- |
-| `n1` | 2 | `self-hosted,linux,x64,cluster,ci` | `--ephemeral`, Quadlet-managed, re-registering |
-| `n2` | 0 | — | the interactive node stays uncontended |
-| `n3` | 1 | `self-hosted,linux,x64,cluster,bench` | `--ephemeral`, systemd concurrency lock of 1 |
+| storage | 2 | `self-hosted,linux,x64,cluster,ci` | `--ephemeral`, Quadlet-managed, re-registering |
+| compute | 0 | — | the interactive node stays uncontended |
+| testbed | 1 | `self-hosted,linux,x64,cluster,bench` | `--ephemeral`, systemd concurrency lock of 1 |
 
 ---
 
@@ -843,7 +855,7 @@ is a path taken without an operator present.
 
 The primary client is a Chromebook, which cannot build images and should not be
 assumed to run anything but a browser and an SSH client. **The developer's
-working environment is a devcontainer on `n2`, not the Chromebook.**
+working environment is a devcontainer on the compute node, not the Chromebook.**
 
 ### 11.1 Paths
 
@@ -852,7 +864,7 @@ working environment is a devcontainer on `n2`, not the Chromebook.**
 One correction has to be stated because the obvious reading is wrong:
 **`vscode.dev` cannot run the Dev Containers extension.** "Open vscode.dev and
 reopen in container" is not a path. The tunnel runs *inside* the devcontainer,
-not on `n2`, and what the browser connects to is an editor already in the
+not on the compute node, and what the browser connects to is an editor already in the
 workspace.
 
 | Path | Use |
@@ -860,7 +872,7 @@ workspace.
 | **Primary** — `code tunnel` inside the container; browser connects via vscode.dev | no local install beyond a browser; works off-LAN with no VPN |
 | **Recovery** — `ssh dc-<session-id>` | retained deliberately; see below |
 | **Web** — the Pages UI (§16) | create, start, stop, migrate, and reclaim sessions |
-| **Off-LAN** — Tailscale | the management plane and the control plane; `n1` advertises the management subnet |
+| **Off-LAN** — Tailscale | the management plane and the control plane; the storage node advertises the management subnet |
 
 The tunnel is named `dc-<session-id>`, the same identifier as the SSH alias, so
 one name addresses a session on both paths. The URL is the documented form:
@@ -896,7 +908,7 @@ container is not a thing to publish by accident.
 
 ### 11.2 Devcontainer storage
 
-Workspaces live on `n2`'s local SATA SSD; the NFS export from `n1` holds durable
+Workspaces live on the compute node's local SATA SSD; the NFS export from the storage node holds durable
 volumes, home directories, and workspace mirrors (§14.3). Git runs on local disk.
 `overlay2` and podman's `overlay` driver do not function on NFS, which is why the
 container graph is local on every node and NFS carries data only.
@@ -970,7 +982,7 @@ static page start an authorization at all (§16.2). It lives in
 `model/cluster.toml`. A table of secrets that contains a non-secret teaches its
 reader to skim.
 
-There is **no repository-scoped token on `n2`**. §16.2's browser token requests
+There is **no repository-scoped token on the compute node**. §16.2's browser token requests
 `read:user` and cannot reach code; a container clones with credentials that
 arrive over the tunnel through the browser's GitHub auth provider and die with
 the connection. The credential that reaches source is per-session and never at
@@ -1010,7 +1022,7 @@ every step is either safe to take unattended or is a halt.
 ### 13.1 Trigger
 
 Each node polls for the digest `:stable` resolves to, every 10 minutes with 0–120
-seconds of jitter, from `n1`'s Zot first and GHCR directly on failure. There is
+seconds of jitter, from the storage node's Zot first and GHCR directly on failure. There is
 no webhook: nodes have no inbound reachability from GitHub, and polling adds no
 attack surface.
 
@@ -1040,7 +1052,7 @@ predicate is re-evaluated within 30 seconds of committing to the upgrade, and th
 poll jitter makes simultaneous stale reads unlikely rather than merely improbable
 in theory.
 
-`n3` has no predecessors, so it moves first on its own. `n1` moves only when both
+the testbed has no predecessors, so it moves first on its own. the storage node moves only when both
 peers are already on the target and healthy.
 
 ### 13.3 Applying, and automatic rollback
@@ -1067,11 +1079,11 @@ A node that rolls back POSTs the failed digest to `cluster-ctl` as
 **quarantined**. Quarantine is a precondition in §13.2, so no other node attempts
 it. An alert fires immediately.
 
-Because `n3` moves first, a bad image is normally caught by the node whose
-failure costs least, and `n2` and `n1` never see it.
+Because the testbed moves first, a bad image is normally caught by the node whose
+failure costs least, and the compute node and the storage node never see it.
 
-The exception is worth naming: if `n1` — last in the sequence — fails and rolls
-back, the cluster is left split-version, with `n2` and `n3` ahead of it. That is
+The exception is worth naming: if the storage node — last in the sequence — fails and rolls
+back, the cluster is left split-version, with the compute node and the testbed ahead of it. That is
 a legitimate, alerted state requiring a human decision (roll the others back, or
 fix forward). It is not silently reconciled.
 
@@ -1107,29 +1119,29 @@ previous `:stable` rather than from the candidate to itself.
 
 | Workload | Node | Drain strategy |
 | --- | --- | --- |
-| Bench job | `n3` | **Wait.** Migrating a measurement invalidates it. Stop re-registering the ephemeral runner; let the in-flight job finish. |
-| CI runners | `n1` | **Wait.** `--ephemeral` runners exit after one job; stop re-registering. |
-| Devcontainers | `n2` | **Migrate** to `n1` (§14.3). |
-| Registry, object store, NFS, control plane | `n1` | **Cannot move.** They are bound to `lv_data`, which is a disk physically inside `n1`. §14.2 states the window. |
+| Bench job | testbed | **Wait.** Migrating a measurement invalidates it. Stop re-registering the ephemeral runner; let the in-flight job finish. |
+| CI runners | storage | **Wait.** `--ephemeral` runners exit after one job; stop re-registering. |
+| Devcontainers | compute | **Migrate** to the storage node (§14.3). |
+| Registry, object store, NFS, control plane | storage | **Cannot move.** They are bound to `lv_data`, which is a disk physically inside the storage node. §14.2 states the window. |
 
-Nothing migrates to `n3`, ever. Receiving work would void the isolation guarantee
+Nothing migrates to the testbed, ever. Receiving work would void the isolation guarantee
 it exists to provide (§2.3).
 
-### 14.2 `n1`'s unavailability window
+### 14.2 the storage node's unavailability window
 
-`n1`'s reboot takes its services with it, for roughly two to three minutes. This
+the storage node's reboot takes its services with it, for roughly two to three minutes. This
 is a stated limit, not a solved problem — solving it would require a second node
 with a copy of the 2 TB disk, which does not exist.
 
 | Impact | Mitigation |
 | --- | --- |
 | Image pulls fail | `registries.conf` lists local Zot first with `ghcr.io` and `docker.io` as fallbacks; pulls continue over WAN |
-| NFS stalls on `n2` | hard mounts stall and recover cleanly; workspaces are on local disk (§11.2) so only durable volumes are affected |
+| NFS stalls on the compute node | hard mounts stall and recover cleanly; workspaces are on local disk (§11.2) so only durable volumes are affected |
 | `sccache` misses | jobs compile without cache; correctness unaffected |
 | Metrics gap | accepted; §5.6 already records Prometheus as lossy |
 | Web UI unavailable | §16.5 |
 
-By the time `n1` updates, `n2` and `n3` are already on the target and are not
+By the time the storage node updates, the compute node and the testbed are already on the target and are not
 pulling. The window is therefore mostly felt by whatever a developer is doing at
 that moment, which is why §18 alerts before rather than after.
 
@@ -1154,20 +1166,20 @@ unpredictably, the spec chooses a predictable one that fails visibly.
 
 **The tunnel URL does not change.** This is the property the tunnel path was
 chosen for. A tunnel name is host-independent: the process dies with the
-container on `n2` and re-registers on `n1` under the same `dc-<id>`, so
+container on the compute node and re-registers on the storage node under the same `dc-<id>`, so
 `https://vscode.dev/tunnel/dc-<id>/<folder>` still addresses the session. The
 user reloads the tab.
 
 That is strictly better than the SSH path, which needs `ProxyCommand` resolution
 against the control plane to discover where the container went — and which
-therefore degrades during `n1`'s own window (§16.5). A `CW-` ID asserts the URL
+therefore degrades during the storage node's own window (§16.5). A `CW-` ID asserts the URL
 survives migration: it is the entire benefit of this choice, and it should fail
 the build if it stops holding.
 
 The `dc-<id>` SSH alias remains the recovery path and resolves to the new host on
 reconnect, so reconnection there is one command and not a lookup.
 
-**Capacity budget.** `n1` has 4 cores and 32 GB and is already running the
+**Capacity budget.** the storage node has 4 cores and 32 GB and is already running the
 storage services and two CI runners. `model/policy.toml` caps migrated
 devcontainers at 12 GiB of declared memory. Beyond the cap, the excess is
 **stopped with notice** rather than migrated — the session survives, the process
@@ -1211,7 +1223,7 @@ A tunnel gives a signal that needs no log parsing and no heuristic: the tunnel
 *process* runs continuously whether or not anyone is looking, but the VS Code
 **server** process spawns only when a client actually connects. Its presence is
 a direct statement that somebody is attached. That is the primary signal, and
-the agent on `n2` samples it.
+the agent on the compute node samples it.
 
 The `sshrc` hook remains for the SSH path (§11.1), which has no server process
 to observe.
@@ -1254,7 +1266,7 @@ registered would collide with any session later recreated under the same
 identifier — and the collision would appear as an editor that will not connect,
 which is a long way from its cause.
 
-Reclamation runs as a systemd timer on `n1`, daily, and emits per-session metrics
+Reclamation runs as a systemd timer on the storage node, daily, and emits per-session metrics
 so §18 can alert on unexpected volume.
 
 ### 15.4 Reclamation is not drain
@@ -1270,7 +1282,7 @@ must not be confused with one stopped because its host was updating, and
 
 ### 16.1 `cluster-ctl`
 
-An axum service on `n1`, backed by SQLite on `lv_data`. It is the session
+An axum service on the storage node, backed by SQLite on `lv_data`. It is the session
 registry (§15.1), the rollout state store (§13.4), and the API the UI speaks to.
 
 | Endpoint | Purpose |
@@ -1350,15 +1362,15 @@ inside the container.
 
 Two things follow. The long-lived browser token cannot reach code, and
 repository access is a per-session credential that dies with the connection.
-§12.2 reflects the second: `n2` needs no repo-scoped PAT.
+§12.2 reflects the second: the compute node needs no repo-scoped PAT.
 
 #### Validation
 
 `cluster-ctl` validates a bearer token by calling `GET /user` and caching the
 token-to-login mapping. The TTL is in `model/policy.toml`; revocation lag is
 bounded by it and the call volume is nowhere near a rate limit. This requires
-outbound WAN from `n1` to `api.github.com`, which is a dependency worth naming
-because §14.2 already lists what stops working when `n1` cannot reach the world.
+outbound WAN from the storage node to `api.github.com`, which is a dependency worth naming
+because §14.2 already lists what stops working when the storage node cannot reach the world.
 
 #### Exposure: Serve, not Funnel
 
@@ -1373,7 +1385,7 @@ provides, and it would match "the client is only a browser" completely. It was
 rejected because the *editor* path {D} the one that actually matters day to day
 {D} already works with no tailnet: the dev tunnels relay is outbound from the
 container (§11.1). Funnel's remaining gain is the management UI without a
-tailnet, and the price is the control plane on the public internet. §16.3's `n1`
+tailnet, and the price is the control plane on the public internet. §16.3's the storage node
 mirror covers the same ground without moving that line.
 
 So the barrier is the tailnet **and** an identity, not either alone.
@@ -1398,9 +1410,9 @@ dependency graph under no rule at all.
 The SPA is entirely static. Its only build-time configuration is the API base
 URL, injected from a repository variable. All state comes from §16.1 at runtime.
 
-**The same bundle is also served from `n1`.** `pages.yml` publishes to Pages and
+**The same bundle is also served from the storage node.** `pages.yml` publishes to Pages and
 pushes the identical artifact to the control plane, which serves it at the origin
-the API is on. Pages stays canonical and stays the versioned artifact; the `n1`
+the API is on. Pages stays canonical and stays the versioned artifact; the the storage node
 copy is the path that always works, because same-origin has no CORS preflight and
 no browser policy standing between a page and the API it was built for.
 
@@ -1423,7 +1435,7 @@ prompt.
 `Access-Control-Allow-Origin: https://afflom.github.io` rather than a wildcard,
 and preflight `OPTIONS` handling.
 
-**When the API is unreachable** — the browser is not on the tailnet, or `n1` is
+**When the API is unreachable** — the browser is not on the tailnet, or the storage node is
 rebooting — the UI renders an explicit disconnected state naming which causes it
 cannot distinguish, rather than an empty list that looks like "you have no
 devcontainers."
@@ -1431,7 +1443,7 @@ devcontainers."
 ### 16.4 Why not drive it through the GitHub API
 
 An alternative design has the static page dispatch `workflow_dispatch` events
-that a self-hosted runner on `n1` picks up, requiring no inbound reachability at
+that a self-hosted runner on the storage node picks up, requiring no inbound reachability at
 all. It is rejected: every action becomes a workflow run, which means 10–30
 seconds of latency to start a container, an Actions log full of UI clicks, and a
 status view that cannot poll. The Tailscale path is direct, and Tailscale is
@@ -1439,15 +1451,15 @@ outbound-initiated, so it opens nothing.
 
 ### 16.5 Availability
 
-The UI is unavailable during `n1`'s update window (§14.2) and during any period
-`n1` is unhealthy. It is a management surface, not a dependency: devcontainers
+The UI is unavailable during the storage node's update window (§14.2) and during any period
+the storage node is unhealthy. It is a management surface, not a dependency: devcontainers
 already running continue to run, their tunnel URLs are unaffected because the
 tunnel is registered by the container and not by the control plane (§11.1), and
 `ssh dc-<id>` continues to work from `generated/ssh_config` without the control
 plane, resolving to the last known host. Only migration-aware resolution
 degrades.
 
-**SSH to `n1` is the lockout escape, and it is retained for that.** §16.2 makes
+**SSH to the storage node is the lockout escape, and it is retained for that.** §16.2 makes
 authorization depend on GitHub being reachable, on the App being configured, and
 on a login being spelled correctly in `model/cluster.toml`. Any of those can be
 wrong at a moment when the UI is the thing that would have fixed it. SSH is the
@@ -1505,7 +1517,7 @@ rather than a stale file. Retired IDs are never reused.
 
 ## 18. Observability
 
-Prometheus, Grafana, and Alertmanager on `n1` as Quadlets, scraping over the
+Prometheus, Grafana, and Alertmanager on the storage node as Quadlets, scraping over the
 mesh. 30-day retention, accepted as lossy in §5.6.
 
 | Alert | Condition |
@@ -1521,7 +1533,7 @@ mesh. 30-day retention, accepted as lossy in §5.6.
 | Cache pool pressure | dm-cache occupancy > 90% |
 | Disk health | SMART failure, HDD prioritised |
 | Clock | chrony unsynchronised or offset > 100 ms |
-| Bench contention | any process on `n3`'s isolated CPUs that is not the measurement job |
+| Bench contention | any process on the testbed's isolated CPUs that is not the measurement job |
 | Reclaim volume | more than 5 sessions archived in one run — a policy or clock bug looks like this |
 | Dirty archives held | count of §15.3 held archives, informational |
 
@@ -1597,9 +1609,9 @@ this repository owns.
 
 **`open`** — measured and reported, never asserted. Every quantity this
 repository can observe but cannot construct an oracle for: the wall-clock length
-of `n1`'s unavailability window (§14.2), the duration of a devcontainer drain
+of the storage node's unavailability window (§14.2), the duration of a devcontainer drain
 (§14.3), the dm-cache hit ratio under a real CI load (§5.3), and the
-run-to-run dispersion of a measurement on `n3` (§8.5). Each carries the
+run-to-run dispersion of a measurement on the testbed (§8.5). Each carries the
 `sample_size` and `seed` its class rule requires, and no document is permitted to
 say that any of them is proven, guaranteed, or established — the meta-gate reads
 the prose and fails the build if one does.
@@ -1675,7 +1687,7 @@ A specification is judged as much by what it refuses to assert as by what it
 establishes. These are the things that are structurally out of reach, recorded
 here so that no future reader mistakes their absence for an oversight.
 
-### 21.1 That `n3` yields stable measurements
+### 21.1 That the testbed yields stable measurements
 
 §8.5 configures CPU isolation, disables SMT, constrains C-states, pins the
 governor, and steers interrupts. Each of those is a *constructible* fact: the
@@ -1753,7 +1765,7 @@ Serve is unaffected — but "suggests" is the whole of the evidence, and a
 permission denial under this feature is *silent*, which is the worst shape a
 wrong guess could take.
 
-The `n1` mirror in §16.3 exists so the answer does not gate anything. If the
+The the storage node mirror in §16.3 exists so the answer does not gate anything. If the
 measurement is ever taken and comes back the other way, the disconnected state in
 §16.3 gains a third cause it cannot distinguish from the other two, and that is
 the only thing that changes.
@@ -1791,7 +1803,7 @@ than here. It is here because nobody has counted.
 
 It does not. §9.1 states that the repository is private and derives from that
 the claim that fork pull requests do not exist --- which is *"the precondition
-that makes T2 on `n1` acceptable"*. The repository is public, so that
+that makes T2 on the storage node acceptable"*. The repository is public, so that
 precondition is false, and the section itself says what follows: *"Going public
 would require moving T2 to hosted runners."*
 
@@ -1812,7 +1824,7 @@ cluster is for, not a defect in what it does.
 
 ### 21.9 That unattended update is risk-free
 
-§13 is engineered so that the common failure is cheap: `n3` moves first, greenboot
+§13 is engineered so that the common failure is cheap: the testbed moves first, greenboot
 rolls back, the digest is quarantined, an alert fires. What is not claimed is that
 every failure is caught. A change that passes `cluster-health` and is still wrong
 — slow, subtly misconfigured, correct on boot and broken an hour later — proceeds
@@ -1942,7 +1954,7 @@ Funnel (§16.2) changes what the UI can reach and therefore what its disconnecte
 state must say. Deciding it during the UI tranche would mean building the UI
 twice.
 
-**Step 12 ships the `n1` mirror with the Pages deployment, not after it.** §16.3
+**Step 12 ships the the storage node mirror with the Pages deployment, not after it.** §16.3
 makes the mirror the path that always works; a UI published to Pages alone,
 pending a mirror to follow, is a UI whose one guaranteed route does not exist
 yet.

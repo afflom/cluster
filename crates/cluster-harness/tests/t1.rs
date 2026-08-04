@@ -39,12 +39,10 @@ fn boot_one(tier: &str) -> (Cluster, Guest) {
     require_bootable(tier, &fixture);
     let c = model();
     let node = c
-        .cluster
         .in_update_order()
-        .first()
-        .copied()
-        .expect("the model declares nodes")
-        .clone();
+        .into_iter()
+        .next()
+        .expect("the fleet has ordinals");
     let guest = Guest::boot(&c, &node, &fixture).expect("the guest boots");
     guest
         .wait_for_ssh(BOOT_TIMEOUT_S)
@@ -172,7 +170,7 @@ fn the_isolated_cpu_set_is_reflected_by_the_kernel_cb_06() {
 
     // Only the variant that declares isolation. The model check already refuses
     // more than one, so this loop runs exactly once.
-    for node in &c.cluster.node {
+    for node in &c.nodes() {
         let Some(isolation) = c
             .images
             .variant_for(&node.name)
@@ -207,4 +205,147 @@ fn the_isolated_cpu_set_is_reflected_by_the_kernel_cb_06() {
             .expect("the governor is readable");
         assert_eq!(governor, isolation.governor, "{}", node.name);
     }
+}
+
+/// `CB-07`: a booted node worked out its own ports, ordinal and addresses.
+///
+/// The assertion that matters is the last one: none of these facts was in the
+/// image. A node that had been *told* would pass every check above it and would
+/// have made §2.3's whole change cosmetic.
+#[test]
+fn a_node_works_out_its_own_identity_cb_07() {
+    let (c, guest) = boot_one("T1");
+
+    // It classified its ports. The mesh ports are the 10GbE ones, and it found
+    // the number a conforming machine presents (§3.1).
+    let mesh = c
+        .network
+        .mesh_class()
+        .expect("the model declares a mesh class");
+    let env = guest
+        .exec("cat /run/cluster/node.env")
+        .expect("cluster-init wrote the node environment");
+
+    // The ordinal its own hardware entitles it to. T1 boots the guest carrying
+    // the bulk device, so it is the registrar and takes the pinned ordinal
+    // (§2.3.1).
+    let storage = c
+        .cluster
+        .self_detected_role()
+        .expect("the model declares a self-detected role");
+    let expected = storage
+        .ordinal
+        .expect("the self-detected role pins an ordinal");
+    assert!(
+        env.contains(&format!("CLUSTER_ORDINAL={expected}")),
+        "{}: the node must take the ordinal its disks entitle it to (§2.3.1): {env}",
+        guest.node
+    );
+    assert!(
+        env.contains(&format!("CLUSTER_ROLE={}", storage.id)),
+        "{}: {env}",
+        guest.node
+    );
+
+    // The addresses that ordinal derives, on the interfaces themselves.
+    let loopback = c
+        .network
+        .addressing
+        .loopback_of(expected)
+        .expect("the ordinal is in the fleet");
+    let addresses = guest
+        .exec("ip -brief address show")
+        .expect("the address table is readable");
+    assert!(
+        addresses.contains(&loopback.to_string()),
+        "{}: the loopback must carry {loopback}, which is what ordinal {expected} \
+         derives (§4.1): {addresses}",
+        guest.node
+    );
+
+    // And a mesh port that found no peer is unaddressed rather than guessed at.
+    // T1 boots one node, so both of them are (§3.3, §12.1).
+    let links = guest
+        .exec("ip -brief link show | grep -c ' UP '")
+        .unwrap_or_default();
+    assert!(
+        !links.is_empty(),
+        "{}: the link table is readable",
+        guest.node
+    );
+
+    // Nothing above was in the image. The rendered tree ships the *policy* --
+    // thresholds, bases, metrics -- and no ordinal, no role and no address.
+    let shipped = guest
+        .exec("cat /usr/lib/cluster/init.conf")
+        .expect("the rendered policy ships in the image");
+    assert!(
+        shipped.contains(&format!("mesh_min_speed_mbps={}", mesh.min_speed_mbps)),
+        "{}: the image carries the policy",
+        guest.node
+    );
+    for absent in ["CLUSTER_ORDINAL", "CLUSTER_ROLE", &loopback.to_string()] {
+        assert!(
+            !shipped.contains(absent),
+            "{}: the image carries `{absent}`, which makes the machine's identity a fact \
+             in two places again (§2.3, §3.1)",
+            guest.node
+        );
+    }
+}
+
+/// `CB-08`: one role marker, and no unit failed for belonging to another role.
+///
+/// This is what one image for three roles costs and what it must not cost. Every
+/// role's units ship on every machine; a unit whose `ConditionPathExists=` is
+/// unmet must be **skipped**, not failed, or `cluster-health`'s "no failed
+/// units" check would report two thirds of the fleet's units as broken on every
+/// node (§8.4, §10.1).
+#[test]
+fn one_role_marker_and_no_unit_failed_for_another_role_cb_08() {
+    let (c, guest) = boot_one("T1");
+
+    let markers = guest
+        .exec("ls /run/cluster/ | grep '^role\\.' | wc -l")
+        .expect("the marker directory is readable");
+    assert_eq!(
+        markers.trim(),
+        "1",
+        "{}: exactly one role marker, or two roles' services start on one machine (§8.4)",
+        guest.node
+    );
+
+    let role = c
+        .cluster
+        .self_detected_role()
+        .expect("the model declares a self-detected role");
+    assert!(
+        guest.succeeds(&format!("test -e /run/cluster/role.{}", role.id)),
+        "{}: the marker must name the role the node discovered",
+        guest.node
+    );
+
+    // The property that makes this safe: nothing failed.
+    let failed = guest
+        .exec("systemctl list-units --state=failed --no-legend --plain | wc -l")
+        .expect("the unit table is readable");
+    assert_eq!(
+        failed.trim(),
+        "0",
+        "{}: a unit gated on another role must be skipped, not failed (§8.4): {}",
+        guest.node,
+        guest
+            .exec("systemctl list-units --state=failed --no-legend --plain")
+            .unwrap_or_default()
+    );
+
+    // And cluster-init itself succeeded, which is what everything above rests on.
+    assert_eq!(
+        guest
+            .exec("systemctl is-active cluster-init.service")
+            .expect("the init unit is queryable"),
+        "active",
+        "{}: cluster-init is what makes one image bootable as three roles",
+        guest.node
+    );
 }

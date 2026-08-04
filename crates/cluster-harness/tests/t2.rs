@@ -54,7 +54,7 @@ fn every_peer_is_reachable_at_the_full_mtu_cn_01() {
     let (c, guests) = mesh();
     let probe = c.policy.health.mesh_mtu_probe_bytes;
 
-    for node in &c.cluster.node {
+    for node in &c.nodes() {
         let guest = guest_for(&guests, &node.name);
         for peer in c.peers_of(&node.name) {
             guest
@@ -85,22 +85,37 @@ fn a_failed_link_fails_over_to_the_transit_route_cn_02() {
     let (c, guests) = mesh();
     let probe = c.policy.health.mesh_mtu_probe_bytes;
 
-    let link = c.network.link.first().expect("the model declares links");
-    let (a, b) = (link.a.clone(), link.b.clone());
+    let link = c
+        .network
+        .addressing
+        .links(c.cluster.fleet.size)
+        .into_iter()
+        .next()
+        .expect("the addressing derives links");
+    let a = c
+        .node_at(link.lower)
+        .expect("the ordinal is in the fleet")
+        .name;
+    let peer = c.node_at(link.higher).expect("the ordinal is in the fleet");
+    let b = peer.name.clone();
     let guest_a = guest_for(&guests, &a);
-    let peer = c.cluster.node(&b).expect("a declared node");
 
     // The direct route carries it first.
     let before = guest_a
         .exec(&format!("ip route get {}", peer.loopback))
         .expect("the route is resolvable");
     assert!(
-        before.contains(&link.address_of(&b).expect("a well-formed /31").to_string()),
+        before.contains(
+            &link
+                .address_of(peer.ordinal)
+                .expect("a link has both ends")
+                .to_string()
+        ),
         "{a} should reach {b} directly before the link is cut: {before}"
     );
 
     guest_a
-        .detach_link(&c, c.cluster.node(&a).expect("a declared node"), &link.id)
+        .detach_link(&c, &c.node(&a).expect("an ordinal slot"), &link.id())
         .expect("the link detaches");
     // networkd needs a moment to notice carrier loss and withdraw the route.
     std::thread::sleep(std::time::Duration::from_secs(10));
@@ -116,7 +131,7 @@ fn a_failed_link_fails_over_to_the_transit_route_cn_02() {
                 "{a} lost {b} when link {} went down. A triangle with only direct \
                  routes is not resilient, which is why §4.2 renders a transit \
                  route: {e}",
-                link.id
+                link.id()
             )
         });
 
@@ -135,7 +150,7 @@ fn a_failed_link_fails_over_to_the_transit_route_cn_02() {
 fn the_firewall_accepts_only_declared_flows_cn_03() {
     let (c, guests) = mesh();
 
-    for node in &c.cluster.node {
+    for node in &c.nodes() {
         let guest = guest_for(&guests, &node.name);
         let ruleset = guest
             .exec("nft list ruleset")
@@ -167,11 +182,10 @@ fn the_firewall_accepts_only_declared_flows_cn_03() {
 fn a_cross_mesh_registry_pull_succeeds_cs_01() {
     let (c, guests) = mesh();
     let storage = c
-        .cluster
-        .node(&c.policy.drain.migration_target)
+        .node_with_role(&c.policy.drain.migration_target)
         .expect("the migration target is a declared node");
 
-    for node in &c.cluster.node {
+    for node in &c.nodes() {
         if node.name == storage.name {
             continue;
         }
@@ -201,11 +215,11 @@ fn nfs_is_exported_to_one_loopback_cs_02() {
         .variant
         .iter()
         .filter(|v| v.mount.iter().any(|m| m.fstype.starts_with("nfs")))
-        .map(|v| v.node.as_str())
+        .map(|v| v.role.as_str())
         .collect();
     assert_eq!(consumers.len(), 1, "one node mounts NFS (§5.4)");
 
-    let consumer = c.cluster.node(consumers[0]).expect("a declared node");
+    let consumer = c.node(consumers[0]).expect("a declared node");
     assert!(
         exports.contains(&consumer.loopback),
         "the export must name {}'s loopback: {exports}",
@@ -235,13 +249,19 @@ fn nfs_is_exported_to_one_loopback_cs_02() {
 fn the_data_volume_is_writethrough_cs_03() {
     let (c, guests) = mesh();
     let node = c
-        .cluster
-        .node(&c.policy.drain.migration_target)
+        .node_with_role(&c.policy.drain.migration_target)
         .expect("the migration target is a declared node");
     let guest = guest_for(&guests, &node.name);
 
-    let vg = node.storage.volume_group.as_ref().expect("a volume group");
-    let lv = node.storage.origin_lv.as_ref().expect("an origin LV");
+    // The devices belong to the role, not to a machine: which chassis holds it
+    // is discovered, and what a machine holding it carries is declared (§2.3).
+    let devices = &c
+        .cluster
+        .role(&node.role)
+        .expect("the migration target is a declared role")
+        .devices;
+    let vg = devices.volume_group.as_ref().expect("a volume group");
+    let lv = devices.origin_lv.as_ref().expect("an origin LV");
     let status = guest
         .exec(&format!("dmsetup status {vg}-{lv}"))
         .expect("the device is readable");
@@ -265,7 +285,10 @@ fn a_devcontainer_starts_and_execs_cw_01() {
         .iter()
         .find(|v| v.quadlet.iter().any(|q| q.name == "devcontainer-agent"))
         .expect("one variant runs the devcontainer agent");
-    let guest = guest_for(&guests, &compute.node);
+    let node = c
+        .node_with_role(&compute.role)
+        .expect("every role holds an ordinal");
+    let guest = guest_for(&guests, &node.name);
 
     guest
         .exec(
@@ -305,7 +328,10 @@ fn an_ephemeral_runner_exits_after_one_job_cw_02() {
                 "{}: every runner is ephemeral, or drain never terminates (§14.1)",
                 runner.name
             );
-            let guest = guest_for(&guests, &variant.node);
+            let slot = c
+                .node_with_role(&variant.role)
+                .expect("every role holds an ordinal");
+            let guest = guest_for(&guests, &slot.name);
             let unit = format!("cluster-runner-{}.service", runner.name);
             let active = guest
                 .exec(&format!("systemctl is-active {unit}"))
@@ -335,10 +361,10 @@ fn exactly_one_guest_updates_at_a_time_cu_07() {
         .expect("T2 is given the candidate digest by the workflow");
 
     let mut order = Vec::new();
-    for _ in 0..c.cluster.node.len() {
+    for _ in 0..c.cluster.fleet.size as usize {
         // Ask every node what it would do, from what its peers actually report.
         let mut admitted = Vec::new();
-        for node in &c.cluster.node {
+        for node in &c.nodes() {
             let guest = guest_for(&guests, &node.name);
             let booted = guest.health().expect("the predicate runs").booted;
             let peers: Vec<PeerReport> = c
@@ -389,7 +415,6 @@ fn exactly_one_guest_updates_at_a_time_cu_07() {
     }
 
     let expected: Vec<String> = c
-        .cluster
         .in_update_order()
         .into_iter()
         .map(|n| n.name.clone())
@@ -406,11 +431,10 @@ fn exactly_one_guest_updates_at_a_time_cu_07() {
 fn a_failed_boot_rolls_back_and_quarantines_cu_08() {
     let (c, guests) = mesh();
     let node = c
-        .cluster
         .in_update_order()
-        .first()
-        .copied()
-        .expect("the model declares nodes");
+        .into_iter()
+        .next()
+        .expect("the fleet has ordinals");
     let guest = guest_for(&guests, &node.name);
 
     let before = guest.health().expect("the predicate runs").booted;
@@ -436,8 +460,7 @@ fn a_failed_boot_rolls_back_and_quarantines_cu_08() {
 
     // And the failed digest is recorded, so no other node attempts it (§13.4).
     let storage = c
-        .cluster
-        .node(&c.policy.drain.migration_target)
+        .node_with_role(&c.policy.drain.migration_target)
         .expect("the migration target is a declared node");
     let rollout = guest_for(&guests, &storage.name)
         .exec(&format!(
@@ -466,10 +489,12 @@ fn a_drain_migrates_a_container_and_preserves_its_worktree_cu_09() {
         .iter()
         .find(|v| v.quadlet.iter().any(|q| q.name == "devcontainer-agent"))
         .expect("one variant runs the devcontainer agent");
-    let source = guest_for(&guests, &compute.node);
+    let compute_slot = c
+        .node_with_role(&compute.role)
+        .expect("every role holds an ordinal");
+    let source = guest_for(&guests, &compute_slot.name);
     let storage = c
-        .cluster
-        .node(&c.policy.drain.migration_target)
+        .node_with_role(&c.policy.drain.migration_target)
         .expect("the migration target is a declared node");
 
     let marker = "the-work-that-must-survive";
@@ -484,7 +509,7 @@ fn a_drain_migrates_a_container_and_preserves_its_worktree_cu_09() {
         .exec(&format!(
             "curl --silent --show-error --fail --request POST \
              http://{}:8080/api/nodes/{}/drain",
-            storage.loopback, compute.node
+            storage.loopback, compute_slot.name
         ))
         .expect("the drain completes");
 
@@ -527,7 +552,7 @@ fn the_rollout_works_across_one_version_boundary_cu_10() {
     );
 
     // Start every node on the previous release.
-    for node in &c.cluster.node {
+    for node in &c.nodes() {
         guest_for(&guests, &node.name)
             .upgrade_to(&previous)
             .expect("the previous release boots");
@@ -536,16 +561,15 @@ fn the_rollout_works_across_one_version_boundary_cu_10() {
     // Move the first node only, then exercise every interface that crosses the
     // mesh while the fleet is split.
     let first = c
-        .cluster
         .in_update_order()
-        .first()
-        .copied()
-        .expect("the model declares nodes");
+        .into_iter()
+        .next()
+        .expect("the fleet has ordinals");
     guest_for(&guests, &first.name)
         .upgrade_to(&target)
         .expect("the candidate boots");
 
-    for node in &c.cluster.node {
+    for node in &c.nodes() {
         let guest = guest_for(&guests, &node.name);
         // The health schema is what §13.2 reads across the boundary; a change to
         // it in one release partitions the rollout.
@@ -586,11 +610,10 @@ fn the_rollout_works_across_one_version_boundary_cu_10() {
 fn an_image_signed_by_another_identity_does_not_stage_cl_04() {
     let (c, guests) = mesh();
     let node = c
-        .cluster
         .in_update_order()
-        .first()
-        .copied()
-        .expect("the model declares nodes");
+        .into_iter()
+        .next()
+        .expect("the fleet has ordinals");
     let guest = guest_for(&guests, &node.name);
 
     // An unsigned image in this repository's own namespace: the reference looks
@@ -613,4 +636,111 @@ fn an_image_signed_by_another_identity_does_not_stage_cl_04() {
         "{} must be unchanged after refusing an image",
         node.name
     );
+}
+
+/// `CN-04`: both ends of a cable agree without being told.
+///
+/// The property the whole addressing scheme rests on (§4.1). Each node learned
+/// the peer on each of its mesh ports (§3.3), derived the `/31` from the two
+/// ordinals, and took the address its own ordinal implies --- with nothing
+/// exchanged but the ordinals themselves. If either end guessed, the two would
+/// collide or the link would carry no traffic.
+#[test]
+fn both_ends_of_a_cable_agree_without_being_told_cn_04() {
+    let (c, guests) = mesh();
+
+    for link in c.network.addressing.links(c.cluster.fleet.size) {
+        for ordinal in [link.lower, link.higher] {
+            let node = c.node_at(ordinal).expect("the ordinal is in the fleet");
+            let guest = guest_for(&guests, &node.name);
+            let expected = link.address_of(ordinal).expect("a link has both its ends");
+
+            let addresses = guest
+                .exec("ip -brief address show")
+                .expect("the address table is readable");
+            assert!(
+                addresses.contains(&expected.to_string()),
+                "{}: link {} gives ordinal {ordinal} the address {expected} and the node \
+                 does not hold it. Both ends compute the same /31 from the same two \
+                 ordinals, so a node that holds a different address derived it from a \
+                 different peer (§3.3, §4.1): {addresses}",
+                node.name,
+                link.id()
+            );
+
+            // And the peer's half is on the same wire, reachable at one hop.
+            let peer = link
+                .peer_of(ordinal)
+                .and_then(|p| link.address_of(p))
+                .expect("a link has both its ends");
+            guest
+                .exec(&format!("ping -c 1 -W 5 {peer}"))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{} cannot reach {peer} across link {}: {e}. The two ends took \
+                         addresses on different prefixes (§4.1)",
+                        node.name,
+                        link.id()
+                    )
+                });
+        }
+    }
+}
+
+/// `CN-05`: ordinals are handed out in arrival order and reused after release.
+///
+/// Provisioning order is the only tie-break available between two identical
+/// machines (§2.3.2), and it has to be *stable*: a registrar that handed out a
+/// fresh ordinal on every boot would exhaust the fleet in three reboots, and a
+/// machine that came back would find its own name pointing somewhere else.
+#[test]
+fn ordinals_are_stable_and_reused_after_release_cn_05() {
+    let (c, guests) = mesh();
+    let storage = c
+        .node_with_role(&c.policy.drain.migration_target)
+        .expect("the migration target is a declared role");
+    let registrar = guest_for(&guests, &storage.name);
+
+    // Every ordinal is held exactly once, and the registry says so.
+    let registry = registrar
+        .exec("cat /var/lib/cluster/registry.json")
+        .expect("the registrar persisted what it handed out");
+    for node in c.nodes() {
+        if node.role == storage.role {
+            continue;
+        }
+        assert!(
+            registry.contains(&format!("\"ordinal\": {}", node.ordinal)),
+            "the registry must record ordinal {} as assigned: {registry}",
+            node.ordinal
+        );
+        assert!(
+            registry.contains(&format!("\"role\": \"{}\"", node.role)),
+            "the registry must record the role that goes with it: {registry}"
+        );
+    }
+
+    // Assignment is keyed on the machine ID, so it survives a reboot. Each node
+    // reports the same ordinal it holds now after coming back.
+    for node in c.nodes() {
+        let guest = guest_for(&guests, &node.name);
+        let before = guest
+            .exec("cat /run/cluster/node.env")
+            .expect("the node environment is readable");
+        assert!(
+            before.contains(&format!("CLUSTER_ORDINAL={}", node.ordinal)),
+            "{}: {before}",
+            node.name
+        );
+        guest.reboot().expect("the node comes back");
+        let after = guest
+            .exec("cat /run/cluster/node.env")
+            .expect("the node environment is readable after a reboot");
+        assert_eq!(
+            before, after,
+            "{}: a reboot must return the same ordinal and role. A registrar that handed \
+             out a fresh one would exhaust the fleet in three reboots (§2.3.2)",
+            node.name
+        );
+    }
 }

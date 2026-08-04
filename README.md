@@ -17,13 +17,13 @@ discharges and records the defect planted to prove it can fail.
 
 | Node | Role | Runs | Updates |
 | --- | --- | --- | --- |
-| `n1` | `storage-ci` | registry, object store, NFS, observability, control plane, 2 CI runners | 3rd |
-| `n2` | `compute` | devcontainers, the Remote-SSH target | 2nd |
-| `n3` | `bench` | one measurement job at a time, nothing else | 1st |
+| storage | `storage-ci` | registry, object store, NFS, observability, control plane, 2 CI runners | 3rd |
+| compute | `compute` | devcontainers, the Remote-SSH target | 2nd |
+| testbed | `bench` | one measurement job at a time, nothing else | 1st |
 
 A direct-attached 10 GbE triangle joins them, `/31` per link, every mesh service
-bound to a loopback. `n3` is first to update because a failure there costs a
-measurement window rather than the pipeline; `n1` is last because it carries the
+bound to a loopback. the testbed is first to update because a failure there costs a
+measurement window rather than the pipeline; the storage node is last because it carries the
 machinery needed to diagnose a bad update.
 
 ## R1 over infrastructure
@@ -104,7 +104,7 @@ registers are blurred:
 documentation without a register row, or in the register without appearing in the
 documentation. `SPEC.md` §20 lists what is cited rather than constructed; §21
 lists what this repository deliberately does not claim at all --- including that
-`n3` yields stable measurements, which is the thing the whole measurement node
+the testbed yields stable measurements, which is the thing the whole measurement node
 exists to make plausible and which no gate here can establish.
 
 ## Adding a capability

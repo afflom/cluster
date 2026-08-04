@@ -57,3 +57,11 @@ Feature: image
     Then it fetches the declared version rather than a floating one
     And it checks the declared digest rather than merely recording it
     And it unpacks the declared compression
+
+  @CI-07 @build
+  Scenario: The image ships nothing the rendered tree made writable
+    Given a rendered tree written under a permissive umask
+    When the image is built
+    Then no file it copied from that tree is group- or world-writable
+    And the signature policy in particular is writable only by root
+    And the build sets the mode rather than inheriting the one it was given
