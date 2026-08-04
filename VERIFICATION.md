@@ -209,6 +209,24 @@ That is the second time in this repository a gate has looked green for a reason
 unrelated to what it claims to check, and both times the tell was the same: the
 failure message did not mention the thing being planted.
 
+**T1 booted the one node that cannot boot alone, and a test passed over an
+empty loop while it did.** T1 took the first node in *rollout* order, which is
+the testbed --- a machine holding no bulk disk, and therefore one with no ordinal
+until the registrar answers (§2.3.2). With a single guest there is nothing on
+either cable to answer, so it refused to come up, correctly, six times, after a
+five-minute SSH timeout each. T1 now boots the storage node, which is the only
+role that can come up alone.
+
+`CB-06` moved to T2 with it, for the same reason and for a second one: the
+isolation arguments are applied after the role is known now (§8.5), and there is
+no role on a machine that never got an ordinal.
+
+The `CB-06` test had also been passing while testing nothing. It looked its
+variant up by node *name* when variants are keyed by *role*, matched none, hit
+`continue` on every iteration and reported `ok` --- the vacuous gate again, this
+time introduced by the very change that renamed the key. It now counts what it
+checked and asserts the count is one.
+
 **The tier driver and the tier's tests disagreed about where the disk was.**
 `Fixture::from_environment` resolved `target/harness/base.qcow2` against the
 working directory. `cargo run` runs from the workspace root and `cargo test` runs

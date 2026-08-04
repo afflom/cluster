@@ -27,7 +27,7 @@ model does not sanction.
 | `CB-03` | `build` | `T1` | SELinux is enforcing on a booted node and the audit log holds no access-vector denial once the boot has settled. |
 | `CB-04` | `build` | `T1` | A booted node refuses a write to the read-only system tree and accepts one to the writable state tree. |
 | `CB-05` | `build` | `T1` | The runtime each variant declares is active on a booted node and its socket answers a Docker API version request. |
-| `CB-06` | `build` | `T1` | On the measurement node the kernel's isolated CPU set is the set the model declares, simultaneous multithreading is off, and the scaling governor is the declared one. |
+| `CB-06` | `build` | `T2` | On the testbed the kernel's isolated CPU set is the set the model declares, simultaneous multithreading is off, the scaling governor is the declared one, and the arguments were applied after the role was known rather than shipped in the image. |
 | `CB-07` | `build` | `T1` | A booted node sorted its own ports into classes by the speeds their drivers report support for, took the ordinal its own hardware entitles it to, and wrote the addresses that follow from it --- none of which was in the image it booted. |
 | `CB-08` | `build` | `T1` | Exactly one role marker exists on a booted node, every unit belonging to another role is inactive rather than failed, and no unit belonging to this node's role was skipped. |
 

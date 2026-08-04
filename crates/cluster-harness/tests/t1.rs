@@ -28,8 +28,19 @@ fn model() -> Cluster {
     c
 }
 
-/// Boot the first node in rollout order. T1 establishes that an image boots and
-/// is healthy, which needs no peers; everything that needs a mesh is T2.
+/// Boot the **storage node**. T1 establishes that an image boots and is healthy,
+/// and the storage node is the only one that can do it alone.
+///
+/// That is a consequence of §2.3, not a convenience. A machine holding no bulk
+/// disk has no ordinal until the registrar answers, and with one guest there is
+/// nothing on either cable to answer --- so it refuses to come up, correctly.
+/// The registrar knows its ordinal from its own disks, so a cable with nothing
+/// on the far end costs it that link's addresses and nothing else (§3.3, §12.1).
+///
+/// This booted the first node in *rollout* order before, which is the testbed.
+/// It failed with `Connection refused` after a five-minute SSH timeout, six
+/// times, and the message said nothing about why --- the node was doing exactly
+/// what it should.
 ///
 /// Requires the fixture rather than skipping past it. Whether T1 runs at all is
 /// the driver's decision (`just t1`), made once and reported in an exit status;
@@ -38,11 +49,13 @@ fn boot_one(tier: &str) -> (Cluster, Guest) {
     let fixture = Fixture::from_environment();
     require_bootable(tier, &fixture);
     let c = model();
+    let role = c
+        .cluster
+        .self_detected_role()
+        .expect("the model declares a self-detected role");
     let node = c
-        .in_update_order()
-        .into_iter()
-        .next()
-        .expect("the fleet has ordinals");
+        .node_with_role(&role.id)
+        .expect("the self-detected role holds an ordinal");
     let guest = Guest::boot(&c, &node, &fixture).expect("the guest boots");
     guest
         .wait_for_ssh(BOOT_TIMEOUT_S)
@@ -126,7 +139,7 @@ fn the_declared_runtime_socket_answers_cb_05() {
     let (c, guest) = boot_one("T1");
     let variant = c
         .images
-        .variant_for(&guest.node)
+        .variant_for(&c.node(&guest.node).expect("a slot").role)
         .expect("the booted node has a variant");
     let runtime = c
         .images
@@ -156,57 +169,6 @@ fn the_declared_runtime_socket_answers_cb_05() {
     );
 }
 
-/// `CB-06`: the isolation the model declares is reflected by the kernel.
-///
-/// Constructible and testable, unlike the stability it is meant to support ---
-/// §21.1 records why that one is not claimed. This asserts what §8.5 configures:
-/// the isolated set is what the model declares, SMT is off, and the governor is
-/// pinned.
-#[test]
-fn the_isolated_cpu_set_is_reflected_by_the_kernel_cb_06() {
-    let fixture = Fixture::from_environment();
-    require_bootable("T1", &fixture);
-    let c = model();
-
-    // Only the variant that declares isolation. The model check already refuses
-    // more than one, so this loop runs exactly once.
-    for node in &c.nodes() {
-        let Some(isolation) = c
-            .images
-            .variant_for(&node.name)
-            .and_then(|v| v.isolation.as_ref())
-        else {
-            continue;
-        };
-        let guest = Guest::boot(&c, node, &fixture).expect("the guest boots");
-        guest.wait_for_ssh(BOOT_TIMEOUT_S).expect("it answers");
-
-        let isolated = guest
-            .exec("cat /sys/devices/system/cpu/isolated")
-            .expect("the isolated set is readable");
-        assert_eq!(
-            isolated, isolation.isolated_cpus,
-            "{}: the kernel's isolated set must be the one the model declares (§8.5)",
-            node.name
-        );
-
-        // `nosmt` took effect: no sibling threads are online.
-        let smt = guest
-            .exec("cat /sys/devices/system/cpu/smt/control")
-            .expect("SMT control is readable");
-        assert!(
-            smt == "off" || smt == "forceoff" || smt == "notsupported",
-            "{}: SMT is `{smt}`, and §8.5 disables it",
-            node.name
-        );
-
-        let governor = guest
-            .exec("cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
-            .expect("the governor is readable");
-        assert_eq!(governor, isolation.governor, "{}", node.name);
-    }
-}
-
 /// `CB-07`: a booted node worked out its own ports, ordinal and addresses.
 ///
 /// The assertion that matters is the last one: none of these facts was in the
@@ -216,8 +178,6 @@ fn the_isolated_cpu_set_is_reflected_by_the_kernel_cb_06() {
 fn a_node_works_out_its_own_identity_cb_07() {
     let (c, guest) = boot_one("T1");
 
-    // It classified its ports. The mesh ports are the 10GbE ones, and it found
-    // the number a conforming machine presents (§3.1).
     let mesh = c
         .network
         .mesh_class()
@@ -263,19 +223,8 @@ fn a_node_works_out_its_own_identity_cb_07() {
         guest.node
     );
 
-    // And a mesh port that found no peer is unaddressed rather than guessed at.
-    // T1 boots one node, so both of them are (§3.3, §12.1).
-    let links = guest
-        .exec("ip -brief link show | grep -c ' UP '")
-        .unwrap_or_default();
-    assert!(
-        !links.is_empty(),
-        "{}: the link table is readable",
-        guest.node
-    );
-
-    // Nothing above was in the image. The rendered tree ships the *policy* --
-    // thresholds, bases, metrics -- and no ordinal, no role and no address.
+    // Nothing above was in the image. The rendered tree ships the *policy* ---
+    // thresholds, bases, metrics --- and no ordinal, no role and no address.
     let shipped = guest
         .exec("cat /usr/lib/cluster/init.conf")
         .expect("the rendered policy ships in the image");

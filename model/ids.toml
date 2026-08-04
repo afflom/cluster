@@ -588,11 +588,15 @@ answers a Docker API version request.
 id = "CB-06"
 level = "build"
 suite = "boot"
-tier = "T1"
+# T2, not T1. The testbed holds no bulk disk, so it has no ordinal until the
+# registrar answers, and a single guest has nothing on either cable to answer
+# (SPEC.md §2.3.2, §3.3). It cannot boot alone, which is correct.
+tier = "T2"
 statement = """
-On the measurement node the kernel's isolated CPU set is the set the model
-declares, simultaneous multithreading is off, and the scaling governor is the
-declared one.
+On the testbed the kernel's isolated CPU set is the set the model declares,
+simultaneous multithreading is off, the scaling governor is the declared one,
+and the arguments were applied after the role was known rather than shipped in
+the image.
 """
 
 [[id]]

@@ -165,7 +165,7 @@ fn the_firewall_accepts_only_declared_flows_cn_03() {
             .firewall
             .rule
             .iter()
-            .filter(|r| r.applies_to(&node.name))
+            .filter(|r| r.applies_to(&node.role))
         {
             assert!(
                 ruleset.contains(&rule.comment),
@@ -193,7 +193,10 @@ fn a_cross_mesh_registry_pull_succeeds_cs_01() {
         guest
             .exec(&format!(
                 "podman pull --tls-verify=false {}:{}/{}/{}:stable",
-                storage.loopback, c.images.registries.port, c.images.signing.repository, node.name
+                storage.loopback,
+                c.images.registries.port,
+                c.images.signing.repository,
+                cluster_model::render::NODE_DIR
             ))
             .unwrap_or_else(|e| panic!("{} cannot pull across the mesh: {e}", node.name));
     }
@@ -207,7 +210,12 @@ fn a_cross_mesh_registry_pull_succeeds_cs_01() {
 #[test]
 fn nfs_is_exported_to_one_loopback_cs_02() {
     let (c, guests) = mesh();
-    let storage = guest_for(&guests, &c.policy.drain.migration_target);
+    // By the ordinal the role holds, not by the role's name: `guest_for` looks
+    // guests up by node name, and `migration_target` is a role now (§2.3).
+    let storage_slot = c
+        .node_with_role(&c.policy.drain.migration_target)
+        .expect("the migration target is a declared role");
+    let storage = guest_for(&guests, &storage_slot.name);
     let exports = storage.exec("exportfs -s").expect("exports are readable");
 
     let consumers: Vec<&str> = c
@@ -743,4 +751,84 @@ fn ordinals_are_stable_and_reused_after_release_cn_05() {
             node.name
         );
     }
+}
+
+/// `CB-06`: the isolation the model declares is reflected by the kernel.
+///
+/// A T2 claim, not a T1 one. The testbed holds no bulk disk, so it has no
+/// ordinal until the registrar answers --- and with one guest there is nothing on
+/// either cable to answer (§2.3.2, §3.3). It cannot boot alone, which is correct
+/// and is why this needs the mesh.
+///
+/// It also moved because the isolation itself did. `isolcpus=` is applied after
+/// the role is known, with `bootc loader-entries set-options-for-source`, since
+/// one image boots all three roles and isolating the storage node's cores would
+/// cost half its CPU to no purpose (§8.5).
+///
+/// Constructible and testable, unlike the stability it is meant to support ---
+/// §21.1 records why that one is not claimed.
+#[test]
+fn the_isolated_cpu_set_is_reflected_by_the_kernel_cb_06() {
+    let (c, guests) = mesh();
+
+    // The one role that declares isolation. The model check already refuses
+    // more than one, and this asserts the search found it rather than passing
+    // over an empty loop --- which is exactly how this test passed while
+    // testing nothing: it looked a variant up by node *name* when variants are
+    // keyed by role, matched none, and reported `ok`.
+    let mut checked = 0usize;
+    for role in &c.cluster.role {
+        let Some(isolation) = c
+            .images
+            .variant_for(&role.id)
+            .and_then(|v| v.isolation.as_ref())
+        else {
+            continue;
+        };
+        let node = c
+            .node_with_role(&role.id)
+            .expect("every role holds an ordinal");
+        let guest = guest_for(&guests, &node.name);
+
+        let isolated = guest
+            .exec("cat /sys/devices/system/cpu/isolated")
+            .expect("the isolated set is readable");
+        assert_eq!(
+            isolated, isolation.isolated_cpus,
+            "{}: the kernel's isolated set must be the one the model declares (§8.5)",
+            node.name
+        );
+
+        // `nosmt` took effect: no sibling threads are online.
+        let smt = guest
+            .exec("cat /sys/devices/system/cpu/smt/control")
+            .expect("SMT control is readable");
+        assert!(
+            smt == "off" || smt == "forceoff" || smt == "notsupported",
+            "{}: SMT is `{smt}`, and §8.5 disables it",
+            node.name
+        );
+
+        let governor = guest
+            .exec("cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+            .expect("the governor is readable");
+        assert_eq!(governor, isolation.governor, "{}", node.name);
+
+        // Applied as a tracked source rather than shipped in the image, so an
+        // upgrade re-merges it and a node that stops holding this role drops it.
+        let options = guest
+            .exec("cat /proc/cmdline")
+            .expect("the command line is readable");
+        assert!(
+            options.contains(&format!("isolcpus={}", isolation.isolated_cpus)),
+            "{}: the applied command line must carry the role's arguments (§8.5): {options}",
+            node.name
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked, 1,
+        "exactly one role declares isolation, and this must have checked it \
+         rather than passing over an empty loop (§2.3)"
+    );
 }
