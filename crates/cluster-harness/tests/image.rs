@@ -325,7 +325,24 @@ fn the_promoted_digest_is_the_validated_one_cl_03() {
         images.does("GITHUB_OUTPUT"),
         "images.yml must capture each built digest as an output (§9.2)"
     );
-    assert!(images.does("podman inspect"), "the digest must be captured");
+    // The digest the *registry* holds, not the one the builder had. A local
+    // manifest's digest is a different value and is not resolvable by a puller,
+    // which made the tiers ask ghcr.io for a manifest it had never heard of.
+    assert!(
+        images.does("--digestfile"),
+        "the pushed digest must be captured from the push itself (§9.2)"
+    );
+    assert!(
+        !images.does("podman inspect --format '{{.Digest}}'"),
+        "a local manifest digest is not what a puller resolves; capturing it \
+         makes every downstream tier validate an artifact nothing can fetch"
+    );
+    // And it is confirmed resolvable before anything downstream boots it.
+    assert!(
+        images.does("skopeo inspect --raw"),
+        "a digest nothing can pull would make the tier a validation of some \
+         other artifact, identical in every log until an install failed"
+    );
     for node in ["n1", "n2", "n3"] {
         assert!(
             images.does(&format!("{node}: ${{{{ steps.push.outputs.{node} }}}}")),
