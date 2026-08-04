@@ -90,24 +90,61 @@ Either outcome is one line in `model/cluster.toml`. Nothing downstream branches.
 
 ### 2.3 Roles
 
-| Node | Role | Runs | Update position |
+| Role | Runs | How the node comes to hold it | Update position |
 | --- | --- | --- | --- |
-| `n1` | `storage-ci` | registry, object store, NFS, observability, control plane, 2 CI runners, T2 QEMU host | 3rd |
-| `n2` | `compute` | devcontainers, VS Code Remote-SSH target | 2nd |
-| `n3` | `bench` | one measurement job at a time, nothing else | 1st |
+| `storage` | registry, object store, NFS, observability, control plane, the registrar, 2 CI runners, T2 QEMU host | **self-detected** from its own disks | 3rd |
+| `compute` | devcontainers, VS Code Remote-SSH target | **assigned** by the storage node, first to register | 2nd |
+| `testbed` | one measurement job at a time, nothing else | **assigned** by the storage node, second to register | 1st |
 
 The split is load-bearing. CI is bursty and I/O-heavy; interactive editing is
 latency-sensitive; measurement requires an absence of both.
 
-`n3` mounts no network filesystem, joins no shared-storage service, and
-**receives no migrated workload under any circumstance.** NFS client activity,
-RPC timers, and interrupt handling inject jitter into exactly the quantity being
-measured. Inputs are staged before a run; results are pushed after.
+The `testbed` node mounts no network filesystem, joins no shared-storage
+service, and **receives no migrated workload under any circumstance.** NFS
+client activity, RPC timers, and interrupt handling inject jitter into exactly
+the quantity being measured. Inputs are staged before a run; results are pushed
+after.
 
-Update position is a model fact and drives §13.2's rollout predicate. `n3` is
-first because a failure there costs a measurement window rather than the
-pipeline; `n1` is last because it carries the machinery needed to diagnose a bad
-update.
+Update position follows from the role and drives §13.2's rollout predicate. The
+testbed is first because a failure there costs a measurement window rather than
+the pipeline; storage is last because it carries the machinery needed to
+diagnose a bad update.
+
+**No node is told which role it holds.** One image is installed on all three
+machines (§8.4); an installed machine differs from its neighbours only in the
+hardware it contains and the order in which it was powered on. A role written
+into an image, or into a per-machine config file, is a fact in two places —
+the machine and the model — and the two disagree the first time a chassis is
+swapped.
+
+#### 2.3.1 Storage is self-detected
+
+Exactly one machine carries bulk disk. `model/cluster.toml` declares a capacity
+threshold; a node holding a non-boot block device at or above it is the storage
+node. The predicate is a model fact, the measurement is taken on the machine.
+
+Detection is not a vote and does not need one: the threshold sits far above the
+container-graph SSDs and far below the bulk device, so the predicate is true on
+exactly one machine of a conforming fleet. A fleet where it is true on two, or
+on none, is misassembled, and the registrar refuses to proceed rather than
+picking one — §21.11 records why that refusal is the honest outcome.
+
+#### 2.3.2 Compute and testbed are assigned, in provisioning order
+
+The storage node runs a **registrar**. A node that is not the storage node
+discovers it across the mesh (§3.3), presents its machine ID, and is assigned
+the next free ordinal and the role that goes with it: the first to register
+becomes `compute`, the second `testbed`.
+
+The assignment is keyed on the machine ID and persisted on the storage node, so
+it is made once and survives every subsequent boot in any order. Re-registering
+returns the existing assignment rather than consuming a new one; a machine that
+must be re-provisioned into a different role is released explicitly (§17.1).
+
+Provisioning order is the only tie-break available. The two machines are
+identical (§2.1), so nothing else distinguishes them — and inventing a
+distinction, by MAC or by serial, would make the fleet's behaviour depend on a
+number nobody chose.
 
 ### 2.4 Firmware settings
 
@@ -142,27 +179,82 @@ registry and NFS already answering.
 
 ## 3. Network identity
 
-### 3.1 Interfaces are matched by MAC, never by name
+### 3.1 Interfaces are classified by link speed, never by name and never by MAC
 
-`model/cluster.toml` records four MAC addresses per node — `mgmt`, `mesh_a`,
-`mesh_b`, `bmc` — and every rendered `.network` file matches on `MACAddress=`.
+**MAC addresses are arbitrary and appear nowhere in the model.** They are
+assigned by whoever made the card, they change when a mainboard is replaced, and
+a fleet that records them makes replacing hardware an edit to a file in a
+repository rather than an operation on a machine.
 
-Interface identity becomes a model fact, checkable at boot: `CB-` asserts every
-declared MAC is present and carries its declared role. A swapped cable or a
-replaced mainboard fails a gate instead of producing a silently mis-wired mesh.
+An earlier revision of this document recorded four MAC addresses per node and
+matched every `.network` file on `MACAddress=`. That made interface identity a
+model fact at the cost of making every chassis swap a code change, and it is
+withdrawn. §21.12 records what was given up with it.
+
+What distinguishes the ports is what they are wired to, and that is a physical
+property of the machine:
+
+| Class | How it is recognised | MTU | Wired to |
+| --- | --- | --- | --- |
+| `mesh` | supports 10GBase-T | 9000 | another node, directly |
+| `lan` | does not, and has carrier | 1500 | the 8-port switch |
+
+The classifier reads each interface's **supported link modes** from its driver,
+not its negotiated speed: a 10GbE port with no cable in it reports no speed at
+all, and a mesh port is down precisely when the peer it is waiting for has not
+booted yet. Supported modes are a property of the card and are readable whether
+or not anything is plugged in.
+
+A conforming machine presents exactly two mesh ports and at least one LAN port
+(§2.1). One that does not is misassembled, and the classifier fails the boot
+rather than guessing — a node that quietly configured one mesh port would join
+the cluster with no redundancy and nothing would say so.
+
+The second 1GbE port is unconfigured — a spare for physical fault diagnosis. It
+is recognised as a LAN-class port and deliberately left without an address;
+`lan` is the class, and the first such port with carrier is the one that
+carries the management plane.
 
 ### 3.2 Planes
 
-| Plane | Interface | MTU | Reachability |
-| --- | --- | --- | --- |
-| Management | `mgmt` (1GbE #1) → 8-port switch | 1500 | LAN, SSH, Tailscale |
-| Mesh | `mesh_a`, `mesh_b` (10GBase-T, direct) | 9000 | node-to-node only |
-| BMC | dedicated IPMI port | 1500 | isolated VLAN, **never routed to WAN** |
+| Plane | Interface class | MTU | Addressing | Reachability |
+| --- | --- | --- | --- | --- |
+| Management | `lan` (1GbE) → 8-port switch | 1500 | DHCP | LAN, SSH, Tailscale |
+| Mesh | `mesh` ×2 (10GBase-T, direct) | 9000 | derived (§4.1) | node-to-node only |
+| BMC | dedicated IPMI port | 1500 | out-of-band | isolated VLAN, **never routed to WAN** |
 
-The second 1GbE port is unconfigured — a spare for physical fault diagnosis.
+Management is **DHCP**. A static address is a per-machine fact, and this
+revision has none: the machine that answers to a given address is whichever one
+the switch and the DHCP server agreed on. Nothing in the cluster reaches a node
+by its management address — §4.3's names resolve to mesh loopbacks — so the
+management plane needs only to be reachable, not predictable.
 
-BMC isolation is not optional. X10-generation BMCs have a poor CVE history and
-are the one component this pipeline cannot update.
+The BMC is out-of-band. It is not a host interface, the host cannot see it, and
+it is not classified: it is configured in firmware (§2.4) and reached from the
+LAN. BMC isolation is not optional. X10-generation BMCs have a poor CVE history
+and are the one component this pipeline cannot update.
+
+### 3.3 Peer discovery
+
+A node knows it has two mesh ports. It does not know which peer is on the far
+end of either, and it cannot be told: that is a property of how somebody ran the
+cables.
+
+Each mesh port is brought up with IPv6 link-local addressing only — always
+available on an Ethernet link, requiring no allocation and no agreement — and
+the node announces itself to the link-local all-nodes multicast address on that
+port alone. A direct-attached segment has exactly two endpoints, so the only
+listener is the peer.
+
+The announcement carries the machine ID and, once known, the ordinal and role.
+What comes back identifies the machine at the other end of *that specific cable*,
+which is the fact the addressing in §4.1 needs and the only fact a node cannot
+derive on its own.
+
+Discovery is not authentication. A rogue device spliced into a direct-attached
+cable inside the chassis' own rack is outside this threat model, as §4.4 already
+states for the mesh as a whole. §21.13 records this rather than leaving it to be
+inferred.
 
 ---
 
@@ -171,29 +263,43 @@ are the one component this pipeline cannot update.
 ### 4.1 Topology
 
 ```
-              n1
+            node1
              /  \
       /31   /    \   /31
            /      \
-         n2 ────── n3
+       node2 ──── node3
               /31
 ```
 
-| Link | Prefix | `n1` | `n2` | `n3` |
+Addresses are **derived from ordinals**, and ordinals are assigned by the
+registrar (§2.3.2). The model declares two bases and the arithmetic; no address
+is written down against a machine.
+
+| Quantity | Derivation | Ordinal 1 | 2 | 3 |
 | --- | --- | --- | --- | --- |
-| `n1 ↔ n2` | `10.10.0.0/31` | `.0` | `.1` | — |
-| `n1 ↔ n3` | `10.10.0.2/31` | `.2` | — | `.3` |
-| `n2 ↔ n3` | `10.10.0.4/31` | — | `.4` | `.5` |
+| Loopback | `loopback_base + ordinal` | `10.10.255.1/32` | `10.10.255.2/32` | `10.10.255.3/32` |
 
-| Node | Loopback |
-| --- | --- |
-| `n1` | `10.10.255.1/32` |
-| `n2` | `10.10.255.2/32` |
-| `n3` | `10.10.255.3/32` |
+| Link | Derivation | Prefix | lower | higher |
+| --- | --- | --- | --- | --- |
+| `1 ↔ 2` | `link_base + 2·index` | `10.10.0.0/31` | `.0` | `.1` |
+| `1 ↔ 3` | " | `10.10.0.2/31` | `.2` | `.3` |
+| `2 ↔ 3` | " | `10.10.0.4/31` | `.4` | `.5` |
 
-`/31` point-to-point per RFC 3021. MTU 9000. Every mesh service binds its node's
-loopback, which decouples service addressing from which link carries a flow and
-makes reachability assertions meaningful.
+The link index is the position of the unordered ordinal pair in ascending order,
+so both ends compute the same prefix from the same two numbers without
+exchanging it. **The lower ordinal takes the even address.** A `/31` carries no
+network or broadcast address (RFC 3021), so its two hosts are exactly its two
+endpoints, and the parity rule is what makes the assignment agree without
+negotiation.
+
+Which physical port carries which link is discovered (§3.3) and never assumed.
+A node learns the peer's ordinal across a cable and only then knows what address
+to put on the port that cable is in — which is why the addressing here is stated
+as arithmetic over ordinals rather than as a table of interfaces.
+
+MTU 9000. Every mesh service binds its node's loopback, which decouples service
+addressing from which link carries a flow and makes reachability assertions
+meaningful.
 
 ### 4.2 Routing and single-link failure
 
@@ -215,10 +321,41 @@ Failover is a `CN-` capability, tested in T2 by detaching a guest netdev.
 
 ### 4.3 Name resolution
 
-No DNS service. `/etc/hosts` is rendered from `model/cluster.toml`: `n1.mesh`,
-`n2.mesh`, `n3.mesh` on loopbacks, plus `*.mgmt`. Three nodes with static
-addresses do not justify a resolver, and a hosts file has no failure mode of its
-own.
+No DNS service. `/etc/hosts` is written from the registry, on every node, once
+the ordinals are known. Three nodes do not justify a resolver, and a hosts file
+has no failure mode of its own.
+
+| Name | Resolves to |
+| --- | --- |
+| `devcluster` | the storage node's loopback |
+| `node1.devcluster` | ordinal 1's loopback |
+| `node2.devcluster` | ordinal 2's loopback |
+| `node3.devcluster` | ordinal 3's loopback |
+
+The cluster domain is `devcluster` and the bare name is the cluster's entry
+point: it is where the control plane answers, and a client that knows only
+`devcluster` can find everything else from there.
+
+Names are on **ordinals, not roles**. `node2.devcluster` is the second machine
+to have registered and stays that machine; it does not move if a role is
+reassigned. A name that tracked a role would change hosts under a client that
+was using it, and the whole point of a stable name is that it does not.
+
+Management addresses have no names. They are handed out by DHCP (§3.2), so
+there is nothing stable to name, and nothing in the cluster needs one.
+
+**This file is rendered, and it is the same on every machine.** Nothing in it
+depends on which chassis is reading it: every name maps to an ordinal, every
+ordinal derives its own loopback (§4.1), and `devcluster` maps to ordinal 1
+because the storage role pins that ordinal (§2.3.2). A machine does not need to
+know which node it is in order to know where all three are.
+
+That is worth stating because the neighbouring artifacts are the opposite. The
+`.network` files cannot be rendered — a machine's own address depends on the
+ordinal it was assigned, and which port carries which link depends on how the
+cables were run (§3.3). The rule is not "runtime because identity is
+discovered"; it is that a file is rendered when its content is a fact about the
+*fleet* and written at boot when it is a fact about *this machine*.
 
 ### 4.4 Firewall
 
@@ -483,15 +620,40 @@ units at boot — the bootc grain exactly.
 - `CB-` asserts `getenforce` is `Enforcing` and the audit log holds no AVC
   denials after boot settles. A denial is a build failure, not a warning.
 
-### 8.4 Variants
+### 8.4 One image, three roles
 
-| Variant | Delta from base |
-| --- | --- |
-| `n1` | declared runtime, `lvm2`, `nfs-utils`, `restic`, Quadlets for Zot/Garage/NFS/Prometheus/Grafana/Alertmanager/`cluster-ctl`, 2 CI runner Quadlets, GC timer, QEMU + libvirt for T2 |
-| `n2` | declared runtime, devcontainer CLI prerequisites, NFS client, devcontainer agent, the tunnel Feature (§11.1) added to every session |
-| `n3` | isolation kargs, 1 bench runner Quadlet, **no NFS client, no Tailscale subnet routing, no migration receiver** |
+**There is one image.** It is installed unmodified on all three machines, and
+what a machine does with it is decided by the role it discovers at boot (§2.3).
 
-### 8.5 `n3` kernel arguments
+Three images differing only by which units they enable was three artifacts to
+build, sign, promote, scan and roll back, for a difference a `ConditionPathExists=`
+expresses in one line. It also made installation an act of choosing, and the
+thing being chosen — which machine is which — is exactly what the machine can
+work out for itself.
+
+So the image carries the union of what the three roles need:
+
+| Role | What it enables | Gated on |
+| --- | --- | --- |
+| `storage` | `lvm2`, `nfs-utils`, `restic`, Quadlets for Zot/Garage/NFS/Prometheus/Grafana/Alertmanager/`cluster-ctl`, the registrar, 2 CI runner Quadlets, GC timer, QEMU + libvirt for T2 | `/run/cluster/role.storage` |
+| `compute` | devcontainer CLI prerequisites, NFS client, devcontainer agent, the tunnel Feature (§11.1) added to every session | `/run/cluster/role.compute` |
+| `testbed` | isolation kargs (§8.5), 1 bench runner Quadlet, **no NFS client, no Tailscale subnet routing, no migration receiver** | `/run/cluster/role.testbed` |
+
+`cluster-init` writes exactly one `/run/cluster/role.*` marker once the role is
+known, and every role-specific unit carries `ConditionPathExists=` naming it. A
+unit whose condition is unmet is skipped, not failed — which is what lets the
+same image boot cleanly into any of the three.
+
+The markers are under `/run` deliberately. A role is re-derived on every boot
+from the machine's own hardware and the registrar's answer; persisting the
+marker would let a stale file outvote the machine it describes.
+
+The cost is a larger image: every machine carries QEMU and `lvm2` whether or not
+it runs them. That is paid once in bytes on an M.2 and recovered in every
+promotion, rollback and scan that now has one artifact to reason about instead
+of three. §21.14 records it rather than pretending the trade is free.
+
+### 8.5 Testbed kernel arguments
 
 ```
 isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3 nosmt
@@ -500,6 +662,17 @@ intel_idle.max_cstate=1 processor.max_cstate=1
 
 with the governor pinned to `performance` and IRQ affinity steered away from the
 isolated set by a `oneshot` unit.
+
+These cannot ship in `/usr/lib/bootc/kargs.d/`: that directory is part of the
+image, the image is now shared by all three roles, and isolating two cores on
+the storage node would cost half its CPU to no purpose.
+
+So they are applied **after the role is known**, with
+`bootc loader-entries set-options-for-source --source cluster-role`. The
+arguments become a tracked source in the BLS entry, merged with the image's own
+and re-merged on every upgrade, and a node that is no longer the testbed drops
+them by setting the same source empty. One reboot follows the first assignment,
+and the marker that records it means it does not repeat.
 
 That these are present and that `/sys/devices/system/cpu/isolated` reflects them
 is constructible and testable. That the environment yields stable measurements is
@@ -745,6 +918,19 @@ Once per node:
    injects the authorized key, the registry PAT, and the Tailscale auth key.
 4. Reboot; `cluster-health` must pass before the node is considered provisioned.
 
+**The same ISO is used for every machine, and the order matters.** There is one
+image (§8.4), so there is one installer and nothing to select at install time.
+What the operator does choose is the order: the machine carrying bulk disk is
+brought up first, because it is the registrar and the other two cannot obtain an
+ordinal until it answers. Of the remaining two, the first powered on becomes
+`compute` and the second `testbed` (§2.3.2).
+
+A machine booted before the registrar answers does not fail. It retries with
+backoff, holding no ordinal and starting no role-gated unit, and joins when the
+registrar appears — so an operator who powers all three on at once gets a
+working cluster, with the compute/testbed assignment decided by whichever won the
+race. Order is how you *choose*; it is not a precondition.
+
 From that point IPMI is used only for power control and post-mortems.
 
 ### 12.2 Secrets
@@ -756,12 +942,25 @@ From that point IPMI is used only for power control and post-mortems.
 | GitHub App private key | Actions secret | never reaches a node | annually |
 | Tailscale auth key | Actions secret | kickstart, ephemeral single-use | per install |
 | Runner registration token | Actions secret | Quadlet env file, per registration | per registration |
-| Garage access keys | generated on `n1` at first boot | never leave `n1` except to CI as an Actions secret | annually |
+| Garage access keys | generated on the storage node at first boot | never leave it except to CI as an Actions secret | annually |
+| Cluster join secret | generated on the storage node at first boot | over the mesh, at registration (§2.3.2) | on `cluster-ctl secret rotate` |
 | `cluster-ctl` session DB | `lv_data` | — | — |
 | cosign | none — keyless (§12.3) | — | — |
 
 Rotation is documented and manual. Automating rotation for a handful of secrets
 across three nodes would add more machinery than it retires.
+
+**The join secret is generated, never declared.** It authenticates a node's
+registration request and the tunnel sessions that follow (§11.1). It is created
+by the registrar on its first boot from the kernel's random source, stored
+`0600` on `lv_data`, and handed to each node when it registers. It appears in no
+model file, no image, no rendered artifact and no repository — a shared secret
+committed to a repository is a shared secret with everyone who can read the
+repository, and this one is public (§9.1).
+
+`check-render` enforces the absence rather than trusting it: no rendered
+artifact may carry a value that looks like a key or a token, which is the same
+gate `CD-07` already applies to the kickstart, applied to the whole tree.
 
 **Two things are deliberately absent from this table.**
 
@@ -1261,11 +1460,39 @@ the only door.
 
 ### 17.1 Replacement
 
-Replacing a mainboard changes MAC addresses, which are model facts (§3.1). The
-procedure is: update `model/cluster.toml`, let the gate pass, promote, bootstrap
-per §12.1. No node holds identity beyond what the model declares, so a
-replacement is a bootstrap and not a restore — except on `n1`, where §5.6 governs
-what is and is not recoverable.
+**Replacing a machine is not a change to this repository.** Under the withdrawn
+§3.1 it was: MAC addresses were model facts, so a new mainboard meant an edit, a
+gate run and a promotion before the fleet could be whole again. Nothing about a
+replacement mainboard is a fact about the cluster's design, and it no longer
+touches the model.
+
+The procedure is: install the promoted image (§12.1), power the machine on, and
+release the old machine's registration:
+
+```
+cluster-ctl registration release <machine-id>
+```
+
+The replacement discovers its own hardware, finds the registrar across the mesh,
+and takes the freed ordinal — the same one, so its names, addresses and update
+position are the ones the fleet already expects.
+
+Release is explicit and never automatic. A node that is merely off — powered
+down for maintenance, or midway through a reboot — is indistinguishable from
+one that is gone, and a registrar that reclaimed ordinals on silence would hand
+a live node's identity to its replacement while the original was still booting.
+
+The storage node is the exception in two ways: it self-detects rather than
+registering, so there is no ordinal to free, and §5.6 governs what is and is not
+recoverable on it. Replacing it is a restore, not a bootstrap.
+
+### 17.1.1 Re-roling
+
+Compute and testbed are assigned in provisioning order (§2.3.2), and provisioning
+happened once. To swap them, release both registrations and boot them in the
+order wanted. There is no command to set a role directly: a role that could be
+set by hand would be a fact in two places again, and the whole of §2.3 exists to
+stop that.
 
 ### 17.2 Retirement
 
@@ -1591,6 +1818,76 @@ every failure is caught. A change that passes `cluster-health` and is still wron
 — slow, subtly misconfigured, correct on boot and broken an hour later — proceeds
 through all three nodes exactly as a good one does. The health predicate is the
 oracle, and the rollout is no better than it.
+
+### 21.11 That a misassembled fleet can be provisioned anyway
+
+§2.3.1's storage predicate is true on exactly one machine of a conforming fleet.
+On a fleet with two bulk devices, or none, it is true twice or never, and there
+is no answer this system can compute: which machine *should* hold the data is a
+decision about the hardware, taken by whoever assembled it.
+
+So the registrar refuses. It does not pick the larger disk, the lower machine
+ID, or the first to boot. A cluster that silently chose would put the object
+store on a 256 GB SSD and report itself healthy, and the operator would find out
+when it filled.
+
+What is claimed is that the refusal is loud and names the count it measured.
+What is not claimed is that the fleet can be brought up without correcting the
+hardware.
+
+### 21.12 That a mis-cabled mesh is detected as such
+
+Matching interfaces by MAC (the withdrawn §3.1) made one class of error visible
+that classification by speed does not: a cable moved from one port to another
+changed which declared MAC carried which role, and the boot failed.
+
+Discovery has no opinion about which port a cable is in. A mesh cable moved
+between the two 10GbE ports of the same machine is not an error and is not
+detected — both ends re-discover their peer and re-derive the same addresses,
+which is the point. But it also means the *only* mis-cabling this system
+detects is one that changes the topology: a link to the wrong machine, or a link
+missing. A physically odd but topologically identical arrangement passes, and no
+gate here will say it looked strange.
+
+What replaced the MAC check is §3.1's port count and §3.3's peer identity: two
+mesh-class ports must be present, and each must find a peer that the registrar
+agrees exists. That catches an absent link and a link to a stranger. It does not
+catch tidiness.
+
+### 21.13 That mesh discovery is authenticated
+
+§3.3's announcement is an unauthenticated datagram on a link-local multicast
+address. Anything electrically present on that segment can answer it and claim
+to be a peer.
+
+This is the same trust §4.4 already extends to the mesh as a whole, and it rests
+on the same physical property: a direct-attached cable between two chassis in
+one rack has exactly two endpoints and no third party without physical access.
+Discovery does not weaken the boundary; it depends on it.
+
+What follows the discovery *is* authenticated: the registration request carries
+the join secret (§12.2), so learning a peer's identity is not sufficient to
+obtain an ordinal, a role, or an address. An attacker with physical access to
+the mesh cabling has, however, already got physical access to the machines, and
+this repository claims nothing against that.
+
+### 21.14 That one image costs nothing
+
+§8.4 collapsed three images into one. The image now carries QEMU, `lvm2`,
+`nfs-utils` and `restic` onto machines that will never run them, and the
+measurement node — the one whose whole purpose is an absence of activity —
+carries the largest set of packages it has ever carried.
+
+Nothing here claims that is free. It costs bytes on an M.2 and it widens the
+package surface every node presents to a CVE scan. What is claimed is that the
+packages are *present*, not running: role-gated units are skipped by their
+`ConditionPathExists=`, and `CB-` asserts on the testbed that no storage-role
+unit is active.
+
+The trade is one artifact to build, sign, promote, scan and roll back instead of
+three, and an installation that requires no operator to know which machine they
+are standing in front of. Whether that is worth the bytes is a judgement, and it
+is recorded here as one.
 
 ---
 

@@ -82,7 +82,7 @@ fn main() -> ExitCode {
         }
     }
 
-    for node in &cluster.cluster.node {
+    for node in &cluster.nodes() {
         let args = cluster_harness::qemu_args(
             &cluster,
             node,

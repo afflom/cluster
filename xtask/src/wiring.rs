@@ -205,7 +205,7 @@ fn every_mounted_config_is_rendered(root: &Path, cluster: &Cluster) -> Result<Ve
                     continue;
                 }
                 let tail = mount.source.trim_start_matches("/etc/");
-                let expected = format!("{}/{tail}", variant.node);
+                let expected = format!("{}/{tail}", cluster_model::render::NODE_DIR);
                 let present = rendered.contains(&expected)
                     || rendered
                         .iter()

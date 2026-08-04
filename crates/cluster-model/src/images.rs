@@ -152,15 +152,19 @@ pub struct Runtime {
     pub description: String,
 }
 
-/// One node image (§8.4).
+/// What a **role** adds to the one image (§8.4).
+///
+/// This used to be one image per node. There is now one image for all three
+/// roles, and a variant is the set of packages, units and Quadlets that role
+/// contributes to it --- all of them present on every machine, and started only
+/// where the role marker says so. Nothing here selects an artifact to build;
+/// it selects behaviour to enable.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Variant {
-    /// Variant identifier, matching the node it is built for.
+    /// Variant identifier, matching the role it belongs to.
     pub id: String,
-    /// The node in `model/cluster.toml` this variant is built for.
-    pub node: String,
-    /// Which [`Runtime`] this variant declares.
-    pub runtime: String,
+    /// The role in `model/cluster.toml` whose machines run this.
+    pub role: String,
     /// Packages beyond the base.
     pub packages: Vec<String>,
     /// Native systemd units enabled on this variant.
@@ -170,22 +174,23 @@ pub struct Variant {
     /// Quadlets beyond the base.
     #[serde(default)]
     pub quadlet: Vec<Quadlet>,
-    /// Actions runners this node hosts (§9.5).
+    /// Actions runners a machine in this role hosts (§9.5).
     #[serde(default)]
     pub runner: Vec<Runner>,
     /// Binaries fetched from an upstream release because no repository carries
     /// them, pinned by version and digest (§8.2).
     #[serde(default)]
     pub upstream: Vec<Upstream>,
-    /// Devcontainer Features added to every session this node starts (§11.1).
+    /// Devcontainer Features added to every session this role starts (§11.1).
     ///
     /// Added with `--additional-features` rather than written into any
     /// `devcontainer.json`: §1 puts that file out of scope, and the tunnel is a
     /// property of how this cluster runs containers, not of any project.
     #[serde(default)]
     pub features: Vec<String>,
-    /// Network filesystems mounted. `n3` declares none, and the model check
-    /// enforces that rather than trusting this file to stay that way (§2.3).
+    /// Network filesystems mounted. The testbed declares none, and the model
+    /// check enforces that rather than trusting this file to stay that way
+    /// (§2.3).
     #[serde(default)]
     pub mount: Vec<Mount>,
     /// CPU isolation, on the variant that has any (§8.5).
@@ -314,9 +319,9 @@ pub struct Isolation {
 }
 
 impl ImagesFile {
-    /// Look up a variant by its node name.
-    pub fn variant_for(&self, node: &str) -> Option<&Variant> {
-        self.variant.iter().find(|v| v.node == node)
+    /// Look up a variant by the role it belongs to.
+    pub fn variant_for(&self, role: &str) -> Option<&Variant> {
+        self.variant.iter().find(|v| v.role == role)
     }
 
     /// Look up a runtime by id.
@@ -324,9 +329,13 @@ impl ImagesFile {
         self.runtime.iter().find(|r| r.id == id)
     }
 
-    /// The runtime a variant actually builds against.
-    pub fn runtime_of(&self, variant: &Variant) -> Option<&Runtime> {
-        self.runtime(&variant.runtime)
+    /// The runtime the image builds against.
+    ///
+    /// One image means one runtime. It was a per-variant declaration when there
+    /// were three images; a single image that installed two would be making
+    /// §8.2's choice twice and shipping both answers.
+    pub fn runtime_of(&self, _variant: &Variant) -> Option<&Runtime> {
+        self.runtime(&self.default_runtime)
     }
 }
 

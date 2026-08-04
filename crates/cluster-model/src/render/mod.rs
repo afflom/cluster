@@ -18,7 +18,7 @@ mod hosts;
 mod kargs;
 mod kickstart;
 mod networkd;
-mod quadlet;
+pub(crate) mod quadlet;
 mod services;
 mod ssh;
 mod trust;
@@ -177,19 +177,18 @@ pub const SYNTAX_CLAIM: &str = "CD-16";
 /// reordered itself between runs would produce a diff nobody wrote.
 pub fn render_all(c: &Cluster) -> Vec<Rendered> {
     let mut out = Vec::new();
-    for node in &c.cluster.node {
-        out.extend(networkd::render(c, node));
-        out.push(firewall::render(c, node));
-        out.push(hosts::render(c, node));
-        out.extend(quadlet::render(c, node));
-        out.push(kargs::render(c, node));
-        out.extend(units::render(c, node));
-        out.extend(trust::render(c, node));
-        out.extend(services::render(c, node));
-        out.extend(host::render(c, node));
-        out.extend(helpers::render(c, node));
-        out.push(kickstart::render(c, node));
-    }
+    out.extend(networkd::render(c));
+    out.extend(firewall::render(c));
+    out.push(hosts::render(c));
+    out.extend(quadlet::render(c));
+    out.push(kargs::render(c));
+    out.extend(kargs::role_kargs(c));
+    out.extend(units::render(c));
+    out.extend(trust::render(c));
+    out.extend(services::render(c));
+    out.extend(host::render(c));
+    out.extend(helpers::render(c));
+    out.push(kickstart::render(c));
     out.push(ssh::render(c));
     for file in &mut out {
         file.ids.push(TREE_CLAIM);
@@ -197,6 +196,23 @@ pub fn render_all(c: &Cluster) -> Vec<Rendered> {
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out
+}
+
+/// Where the one node tree lives under `generated/`.
+///
+/// One directory, not one per node. There was a `generated/n1/`, `n2/` and
+/// `n3/` when there were three images; there is one image now (§8.4), so there
+/// is one tree, and every file in it is byte-identical on all three machines.
+///
+/// The handful of artifacts that genuinely differ per machine --- the `.network`
+/// files, `/etc/hosts`, the role marker --- are not here at all. They depend on
+/// an ordinal the image does not know, and `cluster-init` writes them at boot
+/// (§3.3, §4.3). What is rendered is the *policy* they are written from.
+pub const NODE_DIR: &str = "node";
+
+/// A path under the node tree.
+pub(crate) fn node_path(rest: impl std::fmt::Display) -> String {
+    format!("{NODE_DIR}/{rest}")
 }
 
 /// An INI-style section with a trailing blank line, which is the shape

@@ -14,27 +14,39 @@
 //! than manual updates. Declaring them and rendering nothing would leave exactly
 //! that invisibility, with a model that claimed otherwise.
 
-use crate::render::{section, Rendered};
+use crate::render::{node_path, section, Rendered};
 use crate::{Cluster, Node};
 
-pub(crate) fn render(c: &Cluster, node: &Node) -> Vec<Rendered> {
-    // Only the node that runs them. Rendering a Prometheus configuration onto
-    // the measurement node would be a file that exists to be ignored.
-    if node.name != c.policy.drain.migration_target {
-        return vec![journald(c, node)];
-    }
+pub(crate) fn render(c: &Cluster) -> Vec<Rendered> {
+    // Every one of these ships on every machine, because there is one image
+    // (§8.4). They are *configuration*, not units: a Prometheus configuration on
+    // the measurement node is a few kilobytes nothing reads, where the Quadlet
+    // that would run Prometheus carries a `ConditionPathExists=` and is skipped.
+    //
+    // The alternative --- rendering them only for the role that runs them ---
+    // would put a file in the image whose presence depended on a role the image
+    // does not know, which is the thing this whole revision removes.
     vec![
-        journald(c, node),
-        zot(c, node),
-        prometheus(c, node),
-        alert_rules(c, node),
-        alertmanager(c, node),
-        garage(c, node),
-        nfs_exports(c, node),
-        grafana_datasource(c, node),
-        tailscale_serve(c, node),
-        tailscale_acl(c, node),
+        journald(c),
+        zot(c),
+        prometheus(c),
+        alert_rules(c),
+        alertmanager(c),
+        garage(c),
+        nfs_exports(c),
+        grafana_datasource(c),
+        tailscale_serve(c),
+        tailscale_acl(c),
     ]
+}
+
+/// The ordinal slot the storage role holds.
+///
+/// Every service below binds or scrapes it. Which *machine* that is is not a
+/// fact this renderer has; which ordinal is (§2.3.2, §4.1).
+fn storage_node(c: &Cluster) -> Node {
+    c.node_with_role(&c.policy.drain.migration_target)
+        .expect("the model check requires the migration target to be a declared role")
 }
 
 /// Grafana's datasource (§18).
@@ -43,7 +55,8 @@ pub(crate) fn render(c: &Cluster, node: &Node) -> Vec<Rendered> {
 /// itself active to §10.1's fifth check, and shows an operator nothing --- which
 /// is the same failure mode as the empty `/etc/prometheus` mount, arriving by a
 /// different route.
-fn grafana_datasource(c: &Cluster, node: &Node) -> Rendered {
+fn grafana_datasource(c: &Cluster) -> Rendered {
+    let node = storage_node(c);
     let mut body = String::new();
     body.push_str(&format!(
         "# Grafana's datasource on {}. Provisioned rather than clicked: a Grafana\n\
@@ -63,10 +76,7 @@ fn grafana_datasource(c: &Cluster, node: &Node) -> Rendered {
         c.policy.gc.prometheus_retention_days
     ));
     Rendered::new(
-        format!(
-            "{}/grafana/provisioning/datasources/prometheus.yml",
-            node.name
-        ),
+        node_path("grafana/provisioning/datasources/prometheus.yml"),
         vec!["CD-12"],
         body,
     )
@@ -82,7 +92,8 @@ fn grafana_datasource(c: &Cluster, node: &Node) -> Rendered {
 ///
 /// Without this unit the API is bound and unreachable, and the web interface
 /// renders its disconnected state forever while every gate stays green.
-fn tailscale_serve(c: &Cluster, node: &Node) -> Rendered {
+fn tailscale_serve(c: &Cluster) -> Rendered {
+    let node = storage_node(c);
     let mut body = String::new();
     body.push_str(&format!(
         "# Publishes the control plane at https://{}.{}.ts.net (§16.2).\n\
@@ -118,7 +129,7 @@ fn tailscale_serve(c: &Cluster, node: &Node) -> Rendered {
         &["WantedBy=multi-user.target".to_string()],
     ));
     Rendered::new(
-        format!("{}/systemd/tailscale-serve.service", node.name),
+        node_path("systemd/tailscale-serve.service"),
         vec!["CD-15", "CC-06"],
         body,
     )
@@ -133,7 +144,8 @@ fn tailscale_serve(c: &Cluster, node: &Node) -> Rendered {
 ///
 /// The mesh is never advertised. Only the management subnet is, and only from
 /// the node that §4.5 says advertises it.
-fn tailscale_acl(c: &Cluster, node: &Node) -> Rendered {
+fn tailscale_acl(c: &Cluster) -> Rendered {
+    let node = storage_node(c);
     let mut body = String::new();
     body.push_str(
         "# The tailnet access policy (§4.5). Applied by an operator, not by a node:\n\
@@ -179,7 +191,8 @@ fn tailscale_acl(c: &Cluster, node: &Node) -> Rendered {
 /// Rendered on every node: a journal that fills `/var` takes container graph
 /// storage down with it, and `/var` is the one writable filesystem the bootc
 /// contract gives us (§5.2).
-fn journald(c: &Cluster, node: &Node) -> Rendered {
+fn journald(c: &Cluster) -> Rendered {
+    let _ = storage_node(c);
     let body = format!(
         "# Journal retention (§5.5). Rendered on every node because a journal that\n\
          # fills /var takes container graph storage with it, and /var is the one\n\
@@ -190,7 +203,7 @@ fn journald(c: &Cluster, node: &Node) -> Rendered {
         c.policy.gc.journald_max_use
     );
     Rendered::new(
-        format!("{}/journald.conf.d/10-cluster.conf", node.name),
+        node_path("journald.conf.d/10-cluster.conf"),
         vec!["CD-12"],
         body,
     )
@@ -198,7 +211,8 @@ fn journald(c: &Cluster, node: &Node) -> Rendered {
 
 /// Zot: this repository's images, mirrored from GHCR, with pull-through caches
 /// (§5.4).
-fn zot(c: &Cluster, node: &Node) -> Rendered {
+fn zot(c: &Cluster) -> Rendered {
+    let node = storage_node(c);
     let r = &c.images.registries;
     let repository = &c.images.signing.repository;
 
@@ -252,14 +266,15 @@ fn zot(c: &Cluster, node: &Node) -> Rendered {
     body.push_str("}\n");
 
     Rendered::new(
-        format!("{}/zot/config.json", node.name),
+        node_path("zot/config.json"),
         vec!["CD-12", "CS-04"],
         body,
     )
 }
 
 /// Prometheus, scraping the mesh (§18).
-fn prometheus(c: &Cluster, node: &Node) -> Rendered {
+fn prometheus(c: &Cluster) -> Rendered {
+    let node = storage_node(c);
     let mut body = String::new();
     body.push_str(&format!(
         "# Scrape configuration for {}. Every target is a mesh loopback: the metrics\n\
@@ -281,7 +296,7 @@ fn prometheus(c: &Cluster, node: &Node) -> Rendered {
 
     body.push_str("  - job_name: node\n");
     body.push_str("    static_configs:\n");
-    for n in &c.cluster.node {
+    for n in &c.nodes() {
         body.push_str(&format!(
             "      - targets: [\"{}:9100\"]\n        labels: {{ node: \"{}\", role: \"{}\" }}\n",
             n.loopback, n.name, n.role
@@ -294,7 +309,7 @@ fn prometheus(c: &Cluster, node: &Node) -> Rendered {
     body.push_str("\n  - job_name: cluster-health\n");
     body.push_str("    metrics_path: /health\n");
     body.push_str("    static_configs:\n");
-    for n in &c.cluster.node {
+    for n in &c.nodes() {
         body.push_str(&format!(
             "      - targets: [\"{}:{}\"]\n        labels: {{ node: \"{}\" }}\n",
             n.loopback, c.policy.health.port, n.name
@@ -302,7 +317,7 @@ fn prometheus(c: &Cluster, node: &Node) -> Rendered {
     }
 
     Rendered::new(
-        format!("{}/prometheus/prometheus.yml", node.name),
+        node_path("prometheus/prometheus.yml"),
         vec!["CD-12"],
         body,
     )
@@ -314,7 +329,8 @@ fn prometheus(c: &Cluster, node: &Node) -> Rendered {
 /// observable. Unattended automation whose failures are invisible is worse than
 /// manual updates, so an alert declared in the model and rendered nowhere would
 /// be precisely the invisibility the model claims to have removed.
-fn alert_rules(c: &Cluster, node: &Node) -> Rendered {
+fn alert_rules(c: &Cluster) -> Rendered {
+    let _ = storage_node(c);
     let mut body = String::new();
     body.push_str(
         "# The alerts §18 declares. Each carries the condition and the duration from\n\
@@ -354,7 +370,7 @@ fn alert_rules(c: &Cluster, node: &Node) -> Rendered {
     }
 
     Rendered::new(
-        format!("{}/prometheus/alerts.yml", node.name),
+        node_path("prometheus/alerts.yml"),
         vec!["CD-12", "CD-13"],
         body,
     )
@@ -367,7 +383,7 @@ fn alert_rules(c: &Cluster, node: &Node) -> Rendered {
 /// `policy.toml` keeps the model readable by whoever is deciding *whether* to
 /// alert, and keeps PromQL out of a file that is not about Prometheus.
 fn expression(c: &Cluster, id: &str) -> String {
-    let nodes = c.cluster.node.len();
+    let nodes = c.cluster.fleet.size as usize;
     match id {
         "node-down" => "up{job=\"node\"} == 0".to_string(),
         "failed-units" => "node_systemd_unit_state{state=\"failed\"} > 0".to_string(),
@@ -406,7 +422,8 @@ fn expression(c: &Cluster, id: &str) -> String {
 }
 
 /// Alertmanager: a Tailscale-reachable webhook, and no paging (§18).
-fn alertmanager(c: &Cluster, node: &Node) -> Rendered {
+fn alertmanager(c: &Cluster) -> Rendered {
+    let node = storage_node(c);
     let mut body = String::new();
     body.push_str(
         "# Alertmanager on the storage node. Delivery is a Tailscale-reachable\n\
@@ -428,14 +445,15 @@ fn alertmanager(c: &Cluster, node: &Node) -> Rendered {
     ));
     body.push_str("        send_resolved: true\n");
     Rendered::new(
-        format!("{}/alertmanager/alertmanager.yml", node.name),
+        node_path("alertmanager/alertmanager.yml"),
         vec!["CD-12"],
         body,
     )
 }
 
 /// Garage: the S3-compatible object store backing `sccache` (§5.4).
-fn garage(_c: &Cluster, node: &Node) -> Rendered {
+fn garage(c: &Cluster) -> Rendered {
+    let node = storage_node(c);
     let mut body = String::new();
     body.push_str(&format!(
         "# The object store on {}. It replaces `actions/cache`'s WAN round-trips\n\
@@ -459,7 +477,7 @@ fn garage(_c: &Cluster, node: &Node) -> Rendered {
     body.push_str("[admin]\n");
     body.push_str(&format!("api_bind_addr = \"{}:3903\"\n", node.loopback));
     Rendered::new(
-        format!("{}/garage/garage.toml", node.name),
+        node_path("garage/garage.toml"),
         vec!["CD-12"],
         body,
     )
@@ -471,7 +489,8 @@ fn garage(_c: &Cluster, node: &Node) -> Rendered {
 /// §4.4 makes the mesh a closed segment with exactly two endpoints per link. An
 /// export any wider would be relying on trust the topology does not extend, and
 /// `CS-02` asserts the narrowness on a booted node.
-fn nfs_exports(c: &Cluster, node: &Node) -> Rendered {
+fn nfs_exports(c: &Cluster) -> Rendered {
+    let _ = storage_node(c);
     let mut body = String::new();
     body.push_str(
         "# Exported to one address. sec=sys is acceptable only because §4.4 makes the\n\
@@ -484,8 +503,7 @@ fn nfs_exports(c: &Cluster, node: &Node) -> Rendered {
     for variant in &c.images.variant {
         for mount in variant.mount.iter().filter(|m| m.fstype.starts_with("nfs")) {
             let consumer = c
-                .cluster
-                .node(&variant.node)
+                .node_with_role(&variant.role)
                 .expect("the model check requires every variant to name a node");
             let path = c
                 .expand(&mount.what)
@@ -500,7 +518,7 @@ fn nfs_exports(c: &Cluster, node: &Node) -> Rendered {
     }
 
     Rendered::new(
-        format!("{}/exports", node.name),
+        node_path("exports"),
         vec!["CD-12", "CS-02"],
         body,
     )

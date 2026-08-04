@@ -10,16 +10,16 @@
 //! times a bad image reboots before the previous deployment stands. A deadline
 //! rendered without the count is a rollback that might loop.
 
-use crate::render::{section, Rendered};
-use crate::{Cluster, Node};
+use crate::render::{node_path, section, Rendered};
+use crate::Cluster;
 
-pub(crate) fn render(c: &Cluster, node: &Node) -> Vec<Rendered> {
+pub(crate) fn render(c: &Cluster) -> Vec<Rendered> {
     vec![
-        sshd(c, node),
-        selinux(c, node),
-        greenboot(c, node),
-        hosts_unit(c, node),
-        nftables_dropin(c, node),
+        sshd(c),
+        selinux(c),
+        greenboot(c),
+        hosts_unit(c),
+        nftables_dropin(c),
     ]
 }
 
@@ -41,10 +41,10 @@ pub(crate) fn render(c: &Cluster, node: &Node) -> Vec<Rendered> {
 /// Ordered before `network-pre.target` because every name this cluster resolves
 /// is in that file, and a service that started first would resolve a peer
 /// through the upstream resolver or not at all.
-fn hosts_unit(c: &Cluster, node: &Node) -> Rendered {
+fn hosts_unit(c: &Cluster) -> Rendered {
     let mut body = String::new();
     body.push_str(&format!(
-        "# Places {}'s rendered hosts file (§4.3).\n\
+        "# Places the rendered hosts file (§4.3).\n\
          #\n\
          # /etc/hosts cannot be written by a container build: a RUN finds the path\n\
          # bind-mounted and busy, and a COPY to it is silently dropped --- the image\n\
@@ -56,7 +56,6 @@ fn hosts_unit(c: &Cluster, node: &Node) -> Rendered {
          # it is a copy of an image file rather than anything computed on the node:\n\
          # the three-way merge on update sees a value that only ever changes when\n\
          # the image changes (§5.2).\n\n",
-        node.name
     ));
     body.push_str(&section(
         "Unit",
@@ -86,7 +85,7 @@ fn hosts_unit(c: &Cluster, node: &Node) -> Rendered {
     ));
     let _ = c;
     Rendered::new(
-        format!("{}/systemd/cluster-hosts.service", node.name),
+        node_path("systemd/cluster-hosts.service"),
         vec!["CD-04", "CD-14"],
         body,
     )
@@ -97,15 +96,14 @@ fn hosts_unit(c: &Cluster, node: &Node) -> Rendered {
 /// A drop-in rather than a copy into `/etc/sysconfig/`: the ruleset is an image
 /// file and reading it from `/usr` keeps it that way. One fewer thing in `/etc`
 /// is one fewer thing the update merge has an opinion about (§5.2).
-fn nftables_dropin(c: &Cluster, node: &Node) -> Rendered {
+fn nftables_dropin(c: &Cluster) -> Rendered {
     let mut body = String::new();
     body.push_str(&format!(
-        "# {} loads its ruleset from the image rather than from /etc (§4.4).\n\
+        "# The packet filter loads its ruleset from the image rather than from /etc (§4.4).\n\
          #\n\
          # The rendered file is diff-gated under generated/; reading it where it was\n\
          # shipped means the running ruleset and the reviewed one cannot differ by\n\
          # anything that happened on the node.\n\n",
-        node.name
     ));
     body.push_str(&section(
         "Service",
@@ -118,7 +116,7 @@ fn nftables_dropin(c: &Cluster, node: &Node) -> Rendered {
     ));
     let _ = c;
     Rendered::new(
-        format!("{}/systemd/nftables.service.d/10-cluster.conf", node.name),
+        node_path("systemd/nftables.service.d/10-cluster.conf"),
         vec!["CD-03", "CD-14"],
         body,
     )
@@ -128,12 +126,12 @@ fn nftables_dropin(c: &Cluster, node: &Node) -> Rendered {
 ///
 /// A password-accepting `sshd` on a node that reboots unattended is an
 /// invitation, and there is no operator present to notice.
-fn sshd(c: &Cluster, node: &Node) -> Rendered {
+fn sshd(c: &Cluster) -> Rendered {
     let s = &c.images.base.sshd;
     let no = |allowed: bool| if allowed { "yes" } else { "no" };
 
     let body = format!(
-        "# Key-only SSH on {}. A password-accepting sshd on a node that reboots\n\
+        "# Key-only SSH. A password-accepting sshd on a node that reboots\n\
          # unattended is an invitation, and there is no operator present to notice\n\
          # (§8.1).\n\
          #\n\
@@ -144,23 +142,22 @@ fn sshd(c: &Cluster, node: &Node) -> Rendered {
          PasswordAuthentication {}\n\
          KbdInteractiveAuthentication {}\n\
          PermitRootLogin {}\n",
-        node.name,
         no(s.password_authentication),
         no(s.kbd_interactive_authentication),
         s.permit_root_login
     );
     Rendered::new(
-        format!("{}/sshd_config.d/10-cluster.conf", node.name),
+        node_path("sshd_config.d/10-cluster.conf"),
         vec!["CD-14"],
         body,
     )
 }
 
 /// SELinux, enforcing, and it stays that way (§8.3).
-fn selinux(c: &Cluster, node: &Node) -> Rendered {
+fn selinux(c: &Cluster) -> Rendered {
     let s = &c.images.base.selinux;
     let body = format!(
-        "# SELinux on {}. Enforcing, targeted, and it stays that way (§8.3).\n\
+        "# SELinux: enforcing, targeted, and it stays that way (§8.3).\n\
          #\n\
          # The custom module is compiled at {} time and shipped in\n\
          # /usr/share/selinux/. Nothing compiles policy at runtime: root is\n\
@@ -168,20 +165,20 @@ fn selinux(c: &Cluster, node: &Node) -> Rendered {
          # filesystem that does not take writes.\n\n\
          SELINUX={}\n\
          SELINUXTYPE={}\n",
-        node.name, s.compile_at, s.mode, s.policy_type
+        s.compile_at, s.mode, s.policy_type
     );
     Rendered::new(
-        format!("{}/selinux/config", node.name),
+        node_path("selinux/config"),
         vec!["CD-14", "CB-03"],
         body,
     )
 }
 
 /// greenboot's deadline and its attempt count (§13.3).
-fn greenboot(c: &Cluster, node: &Node) -> Rendered {
+fn greenboot(c: &Cluster) -> Rendered {
     let g = &c.policy.greenboot;
     let body = format!(
-        "# greenboot on {}. The boot is declared successful only if the health\n\
+        "# greenboot. The boot is declared successful only if the health\n\
          # predicate passes within {}s; on failure the previous ostree deployment is\n\
          # restored automatically and the node reboots into it (§13.3).\n\
          #\n\
@@ -191,9 +188,9 @@ fn greenboot(c: &Cluster, node: &Node) -> Rendered {
          # the previous deployment stands and the alert is the operator's signal.\n\n\
          GREENBOOT_MAX_BOOT_ATTEMPTS={}\n\
          GREENBOOT_HEALTHCHECK_TIMEOUT={}\n",
-        node.name, g.deadline_s, g.max_boot_attempts, g.max_boot_attempts, g.deadline_s
+        g.deadline_s, g.max_boot_attempts, g.max_boot_attempts, g.deadline_s
     );
-    Rendered::new(format!("{}/greenboot.conf", node.name), vec!["CD-14"], body)
+    Rendered::new(node_path("greenboot.conf"), vec!["CD-14"], body)
 }
 
 /// A `[Service]` section, re-exported so the module can build units if it grows

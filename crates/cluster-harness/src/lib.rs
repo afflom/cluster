@@ -132,25 +132,31 @@ impl Netdev {
 /// The mesh netdevs one guest takes, in link order.
 ///
 /// A `/31` has exactly two ends, so exactly one guest listens on each link and
-/// exactly one connects. Deriving the roles from the model's `a`/`b` rather than
+/// exactly one connects. Deriving the roles from the ordinals rather than
 /// assigning them here means the wire cannot disagree with the addressing:
-/// whoever holds the even address is the one that listens.
+/// whoever holds the even address --- the lower ordinal --- is the one that
+/// listens (§4.1).
+///
+/// The links come from the addressing arithmetic rather than from a declared
+/// table, which is what lets the harness wire a mesh whose addresses no machine
+/// has been told about yet.
 pub fn mesh_netdevs(cluster: &Cluster, node: &Node) -> Vec<Netdev> {
     cluster
         .network
-        .link
-        .iter()
+        .addressing
+        .links(cluster.cluster.fleet.size)
+        .into_iter()
         .enumerate()
         .filter_map(|(index, link)| {
-            let role = if link.a == node.name {
+            let role = if link.lower == node.ordinal {
                 SocketRole::Listen
-            } else if link.b == node.name {
+            } else if link.higher == node.ordinal {
                 SocketRole::Connect
             } else {
                 return None;
             };
             Some(Netdev {
-                id: link.id.clone(),
+                id: link.id(),
                 role,
                 port: MESH_PORT_BASE + index as u16,
             })

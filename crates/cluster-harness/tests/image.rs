@@ -144,36 +144,38 @@ fn each_variant_installs_its_declared_runtime_ci_02() {
     }
 }
 
-/// `CI-03`: each variant carries its own rendered tree and no other node's.
+/// `CI-03`: the build copies the one rendered tree, and names no node.
+///
+/// This used to assert that each of three Containerfiles copied its own node's
+/// tree and no other's --- the failure it guarded was a variant carrying another
+/// node's addresses, which boots and passes a syntax check. There is one image
+/// now (§8.4) and one tree, so that failure is unreachable by construction, and
+/// what is worth asserting is that it stayed unreachable: no build copies a
+/// per-node tree, because there is no such thing to copy.
 #[test]
-fn each_variant_carries_only_its_own_rendered_tree_ci_03() {
+fn the_build_copies_the_one_tree_and_names_no_node_ci_03() {
     let c = model();
     let files = containerfiles(&root());
+    assert!(!files.is_empty(), "no Containerfile was found");
 
     for file in &files {
-        let trees = copied_trees(file);
-        if file.name == "base" {
-            // §8.1 puts the rendered networkd and hosts files in the base, so
-            // the base is parameterised and built once per node.
-            assert!(
-                trees.iter().all(|t| t == "${NODE}"),
-                "{}: the base is built per node and takes its tree from ${{NODE}}, \
-                 not from {trees:?}",
+        for tree in copied_trees(file) {
+            assert_eq!(
+                tree,
+                cluster_model::render::NODE_DIR,
+                "{}: copies `{tree}`. There is one rendered tree and one image; a build \
+                 that selected a tree would be choosing which machine it was building for, \
+                 which is what §2.3 moved onto the machine",
                 file.name
             );
-            continue;
         }
-        for tree in &trees {
-            assert_eq!(
-                tree, &file.name,
-                "{}: copies {}'s rendered tree. A variant carrying another node's \
-                 addresses is a mis-wired node that boots and passes a syntax \
-                 check (§3.1)",
-                file.name, tree
-            );
+        // No build may name an ordinal either. `generated/node1/` would be a
+        // per-machine tree wearing a different name.
+        for ordinal in c.cluster.fleet.ordinals() {
+            let name = format!("generated/node{ordinal}");
             assert!(
-                c.cluster.node(tree).is_some(),
-                "{}: copies a tree for `{tree}`, which is not a declared node",
+                !file.text.contains(&name),
+                "{}: references `{name}`, which is a per-machine tree (§8.4)",
                 file.name
             );
         }
@@ -203,18 +205,20 @@ fn the_signature_policy_binds_the_promote_workflow_cl_01() {
     let signing = &c.images.signing;
     let dir = root().join(cluster_model::GENERATED_DIR);
 
-    for node in &c.cluster.node {
-        let policy =
-            std::fs::read_to_string(dir.join(node.name.clone()).join("containers/policy.json"))
-                .expect("every node renders a signature policy");
+    {
+        let policy = std::fs::read_to_string(
+            dir.join(cluster_model::render::NODE_DIR)
+                .join("containers/policy.json"),
+        )
+        .expect("the signature policy is rendered");
 
         assert!(
             policy.contains("\"default\": [{ \"type\": \"reject\" }]"),
             "{}: an image the policy does not explicitly admit must not stage (§12.3)",
-            node.name
+            "node"
         );
-        assert!(policy.contains("sigstoreSigned"), "{}", node.name);
-        assert!(policy.contains(&signing.issuer), "{}", node.name);
+        assert!(policy.contains("sigstoreSigned"), "{}", "node");
+        assert!(policy.contains(&signing.issuer), "{}", "node");
 
         // The identity names the workflow, not merely the repository. §12.3 is
         // explicit: an image signed by a different workflow in this same
@@ -237,7 +241,7 @@ fn the_signature_policy_binds_the_promote_workflow_cl_01() {
             ),
             "the certificate identity must be the full workflow reference (§12.3)"
         );
-        assert!(policy.contains(&identity), "{}: {identity}", node.name);
+        assert!(policy.contains(&identity), "{}: {identity}", "node");
 
         // Only the keys `containers-policy.json` defines. It validates strictly
         // and refuses anything else --- and reports it at `bootc install`, so a
@@ -265,7 +269,7 @@ fn the_signature_policy_binds_the_promote_workflow_cl_01() {
                 .contains(&key.as_str()),
                 "{}: `{key}` is not a containers-policy key; a strict validator \
                  refuses the whole policy and says so only at install",
-                node.name
+                "node"
             );
         }
 
@@ -279,20 +283,20 @@ fn the_signature_policy_binds_the_promote_workflow_cl_01() {
             storage, "insecureAcceptAnything",
             "{}: the installer reads from local storage and is refused without \
              this (§12.1)",
-            node.name
+            "node"
         );
         assert_eq!(
             requirement["type"], "sigstoreSigned",
             "{}: the registry path must stay signed --- accepting it would make \
              the local-store rule a loophole instead of a necessity (§12.3)",
-            node.name
+            "node"
         );
         assert!(
             document["transports"]["docker"]
                 .as_object()
                 .is_some_and(|d| d.len() == 1),
             "{}: exactly one repository is admitted from a registry",
-            node.name
+            "node"
         );
 
         // The transparency log is declared, and it belongs where signatures are
@@ -301,7 +305,7 @@ fn the_signature_policy_binds_the_promote_workflow_cl_01() {
         assert!(
             !policy.contains(&signing.transparency_log),
             "{}: the log URL has no place in the policy schema",
-            node.name
+            "node"
         );
 
         // A policy naming only the repository would admit anything any workflow
@@ -311,7 +315,7 @@ fn the_signature_policy_binds_the_promote_workflow_cl_01() {
         assert!(
             !policy.contains(&format!("\"subjectEmail\": \"{repository_only}\"")),
             "{}: the subject must be the workflow, not the repository (§12.3)",
-            node.name
+            "node"
         );
     }
 }
@@ -323,17 +327,16 @@ fn every_pulled_prefix_is_mirrored_locally_cl_02() {
     let c = model();
     let dir = root().join(cluster_model::GENERATED_DIR);
     let storage = c
-        .cluster
-        .node(&c.policy.drain.migration_target)
-        .expect("the migration target is a declared node");
+        .node_with_role(&c.policy.drain.migration_target)
+        .expect("the migration target is a declared role");
     let local = format!("{}:{}", storage.loopback, c.images.registries.port);
 
-    for node in &c.cluster.node {
+    {
         let conf = std::fs::read_to_string(
-            dir.join(node.name.clone())
+            dir.join(cluster_model::render::NODE_DIR)
                 .join("containers/registries.conf"),
         )
-        .expect("every node renders a registry configuration");
+        .expect("the registry configuration is rendered");
 
         // Each `[[registry]]` block declares a mirror. `containers-registries`
         // tries mirrors before the primary location, so the local copy is
@@ -343,14 +346,14 @@ fn every_pulled_prefix_is_mirrored_locally_cl_02() {
         assert!(
             !blocks.is_empty(),
             "{}: no registry blocks were rendered",
-            node.name
+            "node"
         );
         for block in &blocks {
             assert!(
                 block.contains(&local),
                 "{}: a prefix with no local mirror would pull over WAN even when \
                  the mesh has a copy:\n{block}",
-                node.name
+                "node"
             );
         }
 
@@ -360,7 +363,7 @@ fn every_pulled_prefix_is_mirrored_locally_cl_02() {
             assert!(
                 conf.contains(&format!("prefix = \"{fallback}\"")),
                 "{}: {fallback} is declared in the model and not rendered",
-                node.name
+                "node"
             );
         }
         assert!(conf.contains(&format!("ghcr.io/{}", c.images.signing.repository)));

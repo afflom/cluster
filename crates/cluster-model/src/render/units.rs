@@ -12,49 +12,69 @@
 //! at runtime (§7.2), so the ordering predicate's inputs arrive the same way
 //! everything else does: rendered into the image.
 
-use crate::render::{section, Rendered};
-use crate::{Cluster, Node};
+use crate::render::{node_path, section, Rendered};
+use crate::{Cluster, Node, Role};
 
-pub(crate) fn render(c: &Cluster, node: &Node) -> Vec<Rendered> {
+pub(crate) fn render(c: &Cluster) -> Vec<Rendered> {
+    // Every unit ships on every machine (§8.4). The ones belonging to a role
+    // carry `ConditionPathExists=` naming its marker, and systemd *skips* a unit
+    // whose condition is unmet rather than failing it --- which is what keeps
+    // `cluster-health`'s "no failed units" check honest on a machine that is
+    // deliberately not running two thirds of them.
     let mut out = vec![
-        updater_env(c, node),
-        updater_service(c, node),
-        updater_timer(c, node),
-        health_service(c, node),
-        greenboot_check(c, node),
-        gc_service(c, node),
-        gc_timer(c, node),
+        init_service(c),
+        updater_env(c),
+        updater_service(c),
+        updater_timer(c),
+        health_service(c),
+        greenboot_check(c),
+        gc_service(c),
+        gc_timer(c),
     ];
-    // Reclamation runs on the node that holds the session database and the
-    // snapshots, and nowhere else (§15.3).
-    if node.name == c.policy.drain.migration_target {
-        out.push(reclaim_service(c, node));
-        out.push(reclaim_timer(c, node));
-    }
-    // The control plane and the devcontainer agent are native units, not
-    // Quadlets: both drive this node's own podman and filesystem, and both are
-    // binaries the image already ships (§16.1, §15.1).
-    if node.name == c.policy.drain.migration_target {
-        out.push(control_plane_service(c, node));
-    }
-    if c.images
-        .variant_for(&node.name)
-        .is_some_and(|v| v.services.iter().any(|s| s == "devcontainer-agent.service"))
-    {
-        out.push(agent_service(c, node));
-    }
-    // The governor and IRQ affinity are neither kernel arguments nor anything
-    // bootc sets, so the one variant that isolates CPUs carries a unit that
-    // establishes them before the first measurement runs (§8.5).
-    if let Some(isolation) = c
-        .images
-        .variant_for(&node.name)
-        .and_then(|v| v.isolation.as_ref())
-    {
-        out.push(isolation_service(node, isolation));
+    for role in &c.cluster.role {
+        // Reclamation runs where the session database and the snapshots are,
+        // and nowhere else (§15.3). The control plane is there too: both drive
+        // that node's own podman and filesystem, and both are native units
+        // rather than Quadlets because the image already ships the binaries
+        // (§16.1, §15.1).
+        if role.id == c.policy.drain.migration_target {
+            out.push(reclaim_service(c, role));
+            out.push(reclaim_timer(c, role));
+            out.push(control_plane_service(c, role));
+        }
+        let Some(variant) = c.images.variant_for(&role.id) else {
+            continue;
+        };
+        if variant
+            .services
+            .iter()
+            .any(|s| s == "devcontainer-agent.service")
+        {
+            out.push(agent_service(c, role));
+        }
+        // The governor and IRQ affinity are neither kernel arguments nor
+        // anything bootc sets, so the one role that isolates CPUs carries a unit
+        // establishing them before the first measurement runs (§8.5).
+        if let Some(isolation) = variant.isolation.as_ref() {
+            out.push(isolation_service(role, isolation));
+        }
     }
     out
 }
+
+/// The ordinal slot a role holds.
+fn slot(c: &Cluster, role: &str) -> Node {
+    c.node_with_role(role)
+        .expect("the model check gives every role exactly one ordinal")
+}
+
+/// The runtime environment file `cluster-init` writes, holding the handful of
+/// facts a machine can only know once it has an ordinal (§2.3.2, §4.1).
+///
+/// Units read this *and* the rendered one beside it. The split is the whole
+/// design in one line: fleet facts are rendered and diff-gated, machine facts
+/// are discovered and written at boot, and neither file contains the other's.
+pub const NODE_ENV: &str = "/run/cluster/node.env";
 
 /// `cluster-ctl`, the control plane (§16.1).
 ///
@@ -62,7 +82,8 @@ pub(crate) fn render(c: &Cluster, node: &Node) -> Vec<Rendered> {
 /// opened on the management plane. Authorization is the login list from
 /// `model/cluster.toml`, rendered here --- who may drive the cluster is a model
 /// fact under R1 like everything else (§16.2).
-fn control_plane_service(c: &Cluster, node: &Node) -> Rendered {
+fn control_plane_service(c: &Cluster, role: &Role) -> Rendered {
+    let node = slot(c, &role.id);
     let mut body = String::new();
     body.push_str(&format!(
         "# The control plane on {}. Session registry, rollout state, and the API the\n\
@@ -80,11 +101,11 @@ fn control_plane_service(c: &Cluster, node: &Node) -> Rendered {
             "Description=Cluster control plane".to_string(),
             "After=network-online.target var-lib-cluster\\x2dctl.mount".to_string(),
             "Wants=network-online.target".to_string(),
+            format!("ConditionPathExists={}", crate::render::quadlet::role_marker(&role.id)),
         ],
     ));
 
     let peers: Vec<String> = c
-        .cluster
         .in_update_order()
         .into_iter()
         .map(|n| {
@@ -190,7 +211,7 @@ fn control_plane_service(c: &Cluster, node: &Node) -> Rendered {
         &["WantedBy=multi-user.target".to_string()],
     ));
     Rendered::new(
-        format!("{}/systemd/cluster-ctl.service", node.name),
+        node_path("systemd/cluster-ctl.service"),
         vec!["CD-08"],
         body,
     )
@@ -201,20 +222,20 @@ fn control_plane_service(c: &Cluster, node: &Node) -> Rendered {
 /// It is the only thing that can answer whether a workspace is dirty, because it
 /// is the only thing on the node that can see the worktree --- and §15.2 requires
 /// that answer immediately before any destructive step, never from cache.
-fn agent_service(c: &Cluster, node: &Node) -> Rendered {
+fn agent_service(c: &Cluster, role: &Role) -> Rendered {
+    let node = slot(c, &role.id);
     let storage = c
-        .cluster
-        .node(&c.policy.drain.migration_target)
+        .node_with_role(&c.policy.drain.migration_target)
         .expect("the model check requires the migration target to be a declared node");
     let runtime = c
         .images
-        .variant_for(&node.name)
-        .and_then(|v| c.images.runtime_of(v))
+        .runtime(&c.images.default_runtime)
         .expect("the model check requires a declared runtime");
 
     let mut body = String::new();
     body.push_str(&format!(
-        "# The devcontainer agent on {}. It starts and stops devcontainers, reports\n\
+        "# The devcontainer agent on the `{}` role. It starts and stops devcontainers,\n\
+         # reports\n\
          # whether a workspace is dirty, and records an attachment (§15.1, §15.2).\n\
          #\n\
          # It is the only thing that can answer the dirty question, because it is the\n\
@@ -228,6 +249,7 @@ fn agent_service(c: &Cluster, node: &Node) -> Rendered {
             "Description=Devcontainer agent".to_string(),
             "After=network-online.target remote-fs.target".to_string(),
             "Wants=network-online.target".to_string(),
+            format!("ConditionPathExists={}", crate::render::quadlet::role_marker(&role.id)),
         ],
     ));
     body.push_str(&section(
@@ -287,14 +309,14 @@ fn agent_service(c: &Cluster, node: &Node) -> Rendered {
         &["WantedBy=multi-user.target".to_string()],
     ));
     Rendered::new(
-        format!("{}/systemd/devcontainer-agent.service", node.name),
+        node_path("systemd/devcontainer-agent.service"),
         vec!["CD-08"],
         body,
     )
 }
 
 /// Pin the governor and steer interrupts away from the isolated set (§8.5).
-fn isolation_service(node: &Node, isolation: &crate::Isolation) -> Rendered {
+fn isolation_service(_role: &Role, isolation: &crate::Isolation) -> Rendered {
     let mut body = String::new();
     body.push_str(&format!(
         "# CPUs {} are isolated by kernel argument; the governor and IRQ affinity
@@ -316,6 +338,10 @@ fn isolation_service(node: &Node, isolation: &crate::Isolation) -> Rendered {
             "Before=multi-user.target".to_string(),
             "DefaultDependencies=no".to_string(),
             "After=sysinit.target".to_string(),
+            format!(
+                "ConditionPathExists={}",
+                crate::render::quadlet::role_marker(&_role.id)
+            ),
         ],
     ));
     body.push_str(&section(
@@ -339,7 +365,7 @@ fn isolation_service(node: &Node, isolation: &crate::Isolation) -> Rendered {
         &["WantedBy=multi-user.target".to_string()],
     ));
     Rendered::new(
-        format!("{}/systemd/cluster-isolation.service", node.name),
+        node_path("systemd/cluster-isolation.service"),
         vec!["CD-06"],
         body,
     )
@@ -347,32 +373,31 @@ fn isolation_service(node: &Node, isolation: &crate::Isolation) -> Rendered {
 
 /// Everything the updater needs to evaluate §13.2's predicate without reading
 /// the model.
-fn updater_env(c: &Cluster, node: &Node) -> Rendered {
+fn updater_env(c: &Cluster) -> Rendered {
     let r = &c.policy.rollout;
     let mut body = String::new();
     body.push_str(&format!(
-        "# The rollout predicate's inputs for {}, rendered from model/policy.toml\n\
-         # and model/cluster.toml. A node at position {} applies an update only when\n\
-         # every earlier peer is already on the target and healthy, and every later\n\
-         # peer is healthy (§13.2).\n\n",
-        node.name, node.update_position
+        "# The rollout predicate's inputs, rendered from model/policy.toml and\n\
+         # model/cluster.toml. A node applies an update only when every earlier peer\n\
+         # is already on the target and healthy, and every later peer is healthy\n\
+         # (§13.2).\n\
+         #\n\
+         # What is *not* here is which node this is. That is the one input the image\n\
+         # cannot carry --- one image boots all three ordinals (§8.4) --- so\n\
+         # cluster-init writes CLUSTER_NODE, CLUSTER_ROLE and\n\
+         # CLUSTER_UPDATE_POSITION to {NODE_ENV} once the\n\
+         # registrar has answered, and the unit reads both files. Fleet facts are\n\
+         # rendered and diff-gated; machine facts are discovered.\n\n"
     ));
 
-    body.push_str(&format!("CLUSTER_NODE={}\n", node.name));
-    body.push_str(&format!("CLUSTER_ROLE={}\n", node.role));
-    body.push_str(&format!(
-        "CLUSTER_UPDATE_POSITION={}\n",
-        node.update_position
-    ));
-
-    // Peers, with their position and health endpoint, in rollout order. The
+    // Every slot's position and health endpoint, in rollout order. The
     // predicate needs the ordering, so the ordering is what is rendered rather
-    // than a set the updater would have to sort.
+    // than a set the updater would have to sort. It is the whole fleet and not
+    // "the peers", because which entry is this node is not known until boot ---
+    // the updater drops its own by matching CLUSTER_NODE.
     let peers: Vec<String> = c
-        .cluster
         .in_update_order()
         .into_iter()
-        .filter(|n| n.name != node.name)
         .map(|n| {
             format!(
                 "{}:{}:http://{}:{}/health",
@@ -380,7 +405,7 @@ fn updater_env(c: &Cluster, node: &Node) -> Rendered {
             )
         })
         .collect();
-    body.push_str(&format!("CLUSTER_PEERS={}\n", peers.join(",")));
+    body.push_str(&format!("CLUSTER_FLEET={}\n", peers.join(",")));
 
     body.push_str(&format!("CLUSTER_POLL_INTERVAL_S={}\n", r.poll_interval_s));
     body.push_str(&format!("CLUSTER_POLL_JITTER_S={}\n", r.poll_jitter_max_s));
@@ -393,15 +418,14 @@ fn updater_env(c: &Cluster, node: &Node) -> Rendered {
         r.peer_health_timeout_s
     ));
     body.push_str(&format!("CLUSTER_REGISTRIES={}\n", r.registries.join(",")));
-    body.push_str(&format!(
-        "CLUSTER_IMAGE={}/{}\n",
-        r.image_repository, node.name
-    ));
+    // One image for the whole fleet (§8.4), so the reference carries no node
+    // name. It used to be `<repository>/<node>`, which is exactly the shape that
+    // made three artifacts out of one decision.
+    body.push_str(&format!("CLUSTER_IMAGE={}\n", r.image_repository));
     body.push_str(&format!("CLUSTER_STABLE_TAG={}\n", r.stable_tag));
     body.push_str(&format!(
         "CLUSTER_CONTROL_PLANE=http://{}:8080\n",
-        c.cluster
-            .node(&c.policy.drain.migration_target)
+        c.node_with_role(&c.policy.drain.migration_target)
             .expect("the model check requires the migration target to be a declared node")
             .loopback
     ));
@@ -439,13 +463,13 @@ fn updater_env(c: &Cluster, node: &Node) -> Rendered {
     ));
 
     Rendered::new(
-        format!("{}/systemd/cluster-updater.env", node.name),
+        node_path("systemd/cluster-updater.env"),
         vec!["CD-08"],
         body,
     )
 }
 
-fn updater_service(_c: &Cluster, node: &Node) -> Rendered {
+fn updater_service(_c: &Cluster) -> Rendered {
     let mut body = String::new();
     body.push_str(
         "# One shot of the rollout predicate. The timer below decides how often;\n\
@@ -471,13 +495,13 @@ fn updater_service(_c: &Cluster, node: &Node) -> Rendered {
         ],
     ));
     Rendered::new(
-        format!("{}/systemd/cluster-updater.service", node.name),
+        node_path("systemd/cluster-updater.service"),
         vec!["CD-08"],
         body,
     )
 }
 
-fn updater_timer(c: &Cluster, node: &Node) -> Rendered {
+fn updater_timer(c: &Cluster) -> Rendered {
     let r = &c.policy.rollout;
     let mut body = String::new();
     body.push_str(&format!(
@@ -502,20 +526,24 @@ fn updater_timer(c: &Cluster, node: &Node) -> Rendered {
     ));
     body.push_str(&section("Install", &["WantedBy=timers.target".to_string()]));
     Rendered::new(
-        format!("{}/systemd/cluster-updater.timer", node.name),
+        node_path("systemd/cluster-updater.timer"),
         vec!["CD-08"],
         body,
     )
 }
 
-fn health_service(c: &Cluster, node: &Node) -> Rendered {
+fn health_service(c: &Cluster) -> Rendered {
     let h = &c.policy.health;
     let mut body = String::new();
     body.push_str(&format!(
-        "# The health predicate, served on {}'s mesh loopback. This is how nodes\n\
-         # observe each other without a lock: §13.2's ordering is a pure function\n\
-         # of what every peer reports here (§10.1).\n\n",
-        node.name
+        "# The health predicate, served on this node's mesh loopback. This is how\n\
+         # nodes observe each other without a lock: §13.2's ordering is a pure\n\
+         # function of what every peer reports here (§10.1).\n\
+         #\n\
+         # The address comes from {NODE_ENV}, written by cluster-init\n\
+         # once the ordinal is known: a loopback is derived from an ordinal (§4.1)\n\
+         # and one image boots all three of them (§8.4). The port is a model fact\n\
+         # and is here.\n\n"
     ));
     body.push_str(&section(
         "Unit",
@@ -529,9 +557,10 @@ fn health_service(c: &Cluster, node: &Node) -> Rendered {
         "Service",
         &[
             "Type=simple".to_string(),
+            format!("EnvironmentFile={NODE_ENV}"),
             format!(
-                "ExecStart=/usr/bin/cluster-health serve --bind {}:{}",
-                node.loopback, h.port
+                "ExecStart=/usr/bin/cluster-health serve --bind ${{CLUSTER_LOOPBACK}}:{}",
+                h.port
             ),
             "Restart=always".to_string(),
             "RestartSec=5".to_string(),
@@ -542,7 +571,7 @@ fn health_service(c: &Cluster, node: &Node) -> Rendered {
         &["WantedBy=multi-user.target".to_string()],
     ));
     Rendered::new(
-        format!("{}/systemd/cluster-health.service", node.name),
+        node_path("systemd/cluster-health.service"),
         vec!["CD-08"],
         body,
     )
@@ -551,24 +580,23 @@ fn health_service(c: &Cluster, node: &Node) -> Rendered {
 /// greenboot's required check. This is the single reason unattended update is
 /// acceptable: a bad image costs one reboot cycle on one node rather than a
 /// cluster (§13.3).
-fn greenboot_check(c: &Cluster, node: &Node) -> Rendered {
+fn greenboot_check(c: &Cluster) -> Rendered {
     let g = &c.policy.greenboot;
     let control = c
-        .cluster
-        .node(&c.policy.drain.migration_target)
+        .node_with_role(&c.policy.drain.migration_target)
         .expect("the model check requires the migration target to be a declared node");
 
     let mut body = String::new();
     body.push_str(&format!(
         "#!/usr/bin/env bash\n\
-         # greenboot's required check on {}. The boot is declared successful only if\n\
+         # greenboot's required check. The boot is declared successful only if\n\
          # the health predicate passes within {}s; on failure greenboot rolls back to\n\
          # the previous ostree deployment and the node reboots into it (§13.3).\n\
          #\n\
          # This is not a mechanism this repository invents. It is cited (§20.1),\n\
          # configured here, and tested in T2.\n\
          set -euo pipefail\n\n",
-        node.name, g.deadline_s
+        g.deadline_s
     ));
     body.push_str(&format!(
         "if timeout {}s /usr/bin/cluster-health check; then\n  exit 0\nfi\n\n",
@@ -583,26 +611,25 @@ fn greenboot_check(c: &Cluster, node: &Node) -> Rendered {
          curl --silent --show-error --max-time 10 \\\n  \
            --request POST \"http://{}:8080/api/rollout/quarantine\" \\\n  \
            --header 'content-type: application/json' \\\n  \
-           --data \"{{\\\"digest\\\":\\\"${{digest}}\\\",\\\"node\\\":\\\"{}\\\"}}\" || true\n\n\
+           --data \"{{\\\"digest\\\":\\\"${{digest}}\\\",\\\"node\\\":\\\"${{CLUSTER_NODE}}\\\"}}\" || true\n\n\
          exit 1\n",
-        control.loopback, node.name
+        control.loopback
     ));
 
     Rendered::new(
-        format!(
-            "{}/greenboot/{}",
-            node.name,
+        node_path(format!(
+            "greenboot/{}",
             g.check_path
                 .rsplit('/')
                 .next()
                 .expect("a check path names a file")
-        ),
+        )),
         vec!["CD-08"],
         body,
     )
 }
 
-fn gc_service(c: &Cluster, node: &Node) -> Rendered {
+fn gc_service(c: &Cluster) -> Rendered {
     let gc = &c.policy.gc;
     let mut body = String::new();
     body.push_str(&format!(
@@ -637,19 +664,25 @@ fn gc_service(c: &Cluster, node: &Node) -> Rendered {
         // not read §5.5.
         service.push("Environment=CLUSTER_MEASUREMENT_OUTPUT_PRUNED=false".to_string());
     }
-    if node.name == c.policy.drain.migration_target {
-        service.push("ExecStart=/usr/libexec/cluster/zot-gc".to_string());
-    }
+    // Registry collection belongs to the role that runs the registry. The
+    // ExecStart ships on every machine and the script itself is a no-op where
+    // there is no registry to ask, which is cheaper than a second unit and a
+    // second condition for one line (§5.5, §8.4).
+    service.push(format!(
+        "ExecCondition=/usr/bin/test -e {}",
+        crate::render::quadlet::role_marker(&c.policy.drain.migration_target)
+    ));
+    service.push("ExecStart=/usr/libexec/cluster/zot-gc".to_string());
     body.push_str(&section("Service", &service));
 
     Rendered::new(
-        format!("{}/systemd/cluster-gc.service", node.name),
+        node_path("systemd/cluster-gc.service"),
         vec!["CD-08"],
         body,
     )
 }
 
-fn gc_timer(c: &Cluster, node: &Node) -> Rendered {
+fn gc_timer(c: &Cluster) -> Rendered {
     let mut body = String::new();
     body.push_str(&format!("# {} (§5.5).\n\n", c.policy.gc.schedule));
     body.push_str(&section(
@@ -668,13 +701,14 @@ fn gc_timer(c: &Cluster, node: &Node) -> Rendered {
     ));
     body.push_str(&section("Install", &["WantedBy=timers.target".to_string()]));
     Rendered::new(
-        format!("{}/systemd/cluster-gc.timer", node.name),
+        node_path("systemd/cluster-gc.timer"),
         vec!["CD-08"],
         body,
     )
 }
 
-fn reclaim_service(c: &Cluster, node: &Node) -> Rendered {
+fn reclaim_service(c: &Cluster, role: &Role) -> Rendered {
+    let _ = slot(c, &role.id);
     let r = &c.policy.reclaim;
     let mut body = String::new();
     body.push_str(&format!(
@@ -691,6 +725,7 @@ fn reclaim_service(c: &Cluster, node: &Node) -> Rendered {
             // Reclamation and drain are separate mechanisms with separate
             // triggers, and reclamation never runs during a rollout (§15.4).
             "Conflicts=cluster-updater.service".to_string(),
+            format!("ConditionPathExists={}", crate::render::quadlet::role_marker(&role.id)),
         ],
     ));
     body.push_str(&section(
@@ -701,18 +736,25 @@ fn reclaim_service(c: &Cluster, node: &Node) -> Rendered {
         ],
     ));
     Rendered::new(
-        format!("{}/systemd/cluster-reclaim.service", node.name),
+        node_path("systemd/cluster-reclaim.service"),
         vec!["CD-08"],
         body,
     )
 }
 
-fn reclaim_timer(c: &Cluster, node: &Node) -> Rendered {
+fn reclaim_timer(c: &Cluster, role: &Role) -> Rendered {
+    let _ = slot(c, &role.id);
     let mut body = String::new();
     body.push_str(&format!("# {} (§15.3).\n\n", c.policy.reclaim.schedule));
     body.push_str(&section(
         "Unit",
-        &["Description=Devcontainer reclamation schedule".to_string()],
+        &[
+            "Description=Devcontainer reclamation schedule".to_string(),
+            format!(
+                "ConditionPathExists={}",
+                crate::render::quadlet::role_marker(&role.id)
+            ),
+        ],
     ));
     body.push_str(&section(
         "Timer",
@@ -723,8 +765,66 @@ fn reclaim_timer(c: &Cluster, node: &Node) -> Rendered {
     ));
     body.push_str(&section("Install", &["WantedBy=timers.target".to_string()]));
     Rendered::new(
-        format!("{}/systemd/cluster-reclaim.timer", node.name),
+        node_path("systemd/cluster-reclaim.timer"),
         vec!["CD-08"],
+        body,
+    )
+}
+
+/// `cluster-init`, which is what makes one image bootable as three roles
+/// (§2.3, §3.1, §8.4).
+///
+/// Ordered before `systemd-networkd`, because the `.network` files it writes are
+/// the ones networkd will read. Everything downstream --- the role markers every
+/// gated unit waits on, the node environment the health service binds from, the
+/// firewall include, the role's kernel arguments --- is produced here, so this is
+/// the one unit whose failure has to stop the boot rather than degrade it.
+fn init_service(c: &Cluster) -> Rendered {
+    let discovery = &c.network.discovery;
+    let mut body = String::new();
+    body.push_str(&format!(
+        "# What this machine works out about itself: which ports are mesh, whether it\n\
+         # holds bulk disk, which peer is on which cable, and therefore which ordinal,\n\
+         # role and addresses are its own (§2.3, §3.1, §3.3, §4.1).\n\
+         #\n\
+         # Before networkd, because the units it writes are the ones networkd reads.\n\
+         #\n\
+         # A failure here fails the boot. A node that could not classify its ports or\n\
+         # obtain an ordinal has nothing safe to do next, and one that started its\n\
+         # services anyway would look healthy while being wrong (§3.1, §21.11).\n\
+         #\n\
+         # The timeout is discovery's own ({}s) plus a margin: a peer that has not been\n\
+         # powered on yet is the case §12.1 promises this survives, and a unit killed\n\
+         # mid-wait would report a misassembled fleet where there was only a slow one.\n\n",
+        discovery.timeout_s
+    ));
+    body.push_str(&section(
+        "Unit",
+        &[
+            "Description=Work out this node's ordinal, role and addresses".to_string(),
+            "DefaultDependencies=no".to_string(),
+            "After=systemd-udev-settle.service local-fs.target".to_string(),
+            "Wants=systemd-udev-settle.service".to_string(),
+            "Before=systemd-networkd.service network-pre.target".to_string(),
+            "Wants=network-pre.target".to_string(),
+        ],
+    ));
+    body.push_str(&section(
+        "Service",
+        &[
+            "Type=oneshot".to_string(),
+            "RemainAfterExit=yes".to_string(),
+            "ExecStart=/usr/bin/cluster-init".to_string(),
+            format!("TimeoutStartSec={}", discovery.timeout_s * 2),
+        ],
+    ));
+    body.push_str(&section(
+        "Install",
+        &["WantedBy=sysinit.target".to_string()],
+    ));
+    Rendered::new(
+        node_path("systemd/cluster-init.service"),
+        vec!["CD-01", "CD-17"],
         body,
     )
 }

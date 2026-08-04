@@ -41,138 +41,94 @@ fn matching(files: &[Rendered], suffix: &str) -> Vec<Rendered> {
         .collect()
 }
 
-/// `CD-01`: interfaces are matched by MAC, never by kernel name.
+/// `CD-01`: ports are classified by link speed, and no MAC is rendered anywhere.
 #[test]
-fn interfaces_are_matched_by_mac_cd_01() {
+fn ports_are_classified_by_speed_and_no_mac_is_rendered_cd_01() {
     let c = model();
     let files = rendered();
-    let units = matching(&files, ".network");
-    assert!(!units.is_empty(), "no network units rendered");
 
-    let mut seen: Vec<String> = Vec::new();
-    for unit in &units {
-        // The loopback has no card, so it is the one unit matched by name. The
-        // claim is worded for physical interfaces for exactly this reason, and
-        // the exception is visible in the rendered file rather than inferred.
-        if unit.path.ends_with("30-loopback.network") {
-            assert!(
-                unit.body.contains("Name=lo"),
-                "{}: the loopback unit must match the loopback",
-                unit.path
-            );
-            continue;
-        }
+    // Nothing in the tree carries a MAC. The withdrawn §3.1 put four per node
+    // into every `.network` file, which made replacing a mainboard an edit to a
+    // file in a repository (§21.12).
+    for file in &files {
         assert!(
-            unit.body.contains("MACAddress="),
-            "{}: a physical interface must be matched by MAC (§3.1)",
-            unit.path
+            !file.body.contains("MACAddress="),
+            "{}: a MAC address is a fact about a card, not about this cluster (§3.1)",
+            file.path
         );
-        assert!(
-            !unit.body.contains("Name="),
-            "{}: matching on a kernel name binds whatever the kernel enumerated \
-             that boot (§3.1)",
-            unit.path
-        );
-        for line in unit.body.lines() {
-            if let Some(mac) = line.strip_prefix("MACAddress=") {
-                seen.push(mac.to_string());
-            }
-        }
     }
 
-    // Every MAC that carries a configured interface appears exactly once. The
-    // BMC's is declared but never rendered: it is the BMC's own NIC, on an
-    // isolated VLAN the host OS does not configure (§3.2).
-    for node in &c.cluster.node {
-        for (role, mac) in node.mac.roles() {
-            let count = seen.iter().filter(|m| m.as_str() == mac).count();
-            let expected = usize::from(role != "bmc");
-            assert_eq!(
-                count, expected,
-                "{}.{role} ({mac}) appears in {count} units, expected {expected}",
-                node.name
-            );
-        }
+    // What replaces it: the thresholds a machine sorts its own ports with.
+    let policy = files
+        .iter()
+        .find(|f| f.path.ends_with("init.conf"))
+        .expect("the network policy is rendered");
+    let mesh = c.network.mesh_class().expect("a mesh class is declared");
+    let lan = c.network.lan_class().expect("a lan class is declared");
+    for expected in [
+        format!("mesh_min_speed_mbps={}", mesh.min_speed_mbps),
+        format!("mesh_count={}", mesh.count),
+        format!("mesh_mtu={}", mesh.mtu),
+        format!("lan_min_speed_mbps={}", lan.min_speed_mbps),
+        format!("lan_addressing={}", lan.addressing),
+    ] {
+        assert!(
+            policy.body.contains(&expected),
+            "the rendered policy must carry `{expected}`, or cluster-init would need its \
+             own copy of it (§3.1)"
+        );
     }
+
+    // The mesh threshold is above the LAN one, or every port classifies as mesh.
+    assert!(mesh.min_speed_mbps > lan.min_speed_mbps);
+    // And the LAN plane is DHCP: there is no per-machine address left to make it
+    // static from (§3.2).
+    assert_eq!(lan.addressing, "dhcp");
 }
 
-/// `CD-02`: a direct route and a transit route to every peer loopback.
+/// `CD-02`: the route metrics and addressing bases are rendered, not compiled in.
+///
+/// The `.network` files themselves cannot be rendered --- a mesh unit needs this
+/// machine's ordinal and the ordinal of the peer on a particular cable, and one
+/// image boots all three (§3.3, §8.4). What R1 still covers is the arithmetic
+/// and the metrics both ends compute from, which is what this asserts. That the
+/// units built from them carry a direct and a transit route to every peer is
+/// `cluster-init`'s own test, where the units are actually produced.
 #[test]
-fn every_peer_has_a_direct_and_a_transit_route_cd_02() {
+fn the_routing_policy_is_rendered_not_compiled_in_cd_02() {
     let c = model();
     let files = rendered();
-    let direct = c.network.routing.direct_metric;
-    let transit = c.network.routing.transit_metric;
 
-    for node in &c.cluster.node {
-        let units: String = matching(&files, ".network")
-            .iter()
-            .filter(|f| f.path.starts_with(&format!("{}/", node.name)))
-            .map(|f| f.body.clone())
-            .collect::<Vec<_>>()
-            .join("\n");
+    let policy = files
+        .iter()
+        .find(|f| f.path.ends_with("init.conf"))
+        .expect("the network policy is rendered");
 
-        for peer in c.peers_of(&node.name) {
-            let destination = format!("Destination={}/32", peer.loopback);
-            let blocks: Vec<&str> = units.split("[Route]").skip(1).collect();
-
-            let with_metric = |metric: u32| -> Vec<&&str> {
-                blocks
-                    .iter()
-                    .filter(|b| b.contains(&destination) && b.contains(&format!("Metric={metric}")))
-                    .collect()
-            };
-
-            assert_eq!(
-                with_metric(direct).len(),
-                1,
-                "{} needs exactly one direct route to {} at metric {direct}",
-                node.name,
-                peer.name
-            );
-            let transit_routes = with_metric(transit);
-            assert_eq!(
-                transit_routes.len(),
-                1,
-                "{} needs exactly one transit route to {} at metric {transit}. Without it \
-                 one failed link partitions two nodes that can reach each other through \
-                 the third (§4.2)",
-                node.name,
-                peer.name
-            );
-
-            // The transit gateway is the *remaining* peer's address on the link
-            // this node shares with it --- never the destination's own address,
-            // which is what a route copied from the direct one would say.
-            let other = c
-                .peers_of(&node.name)
-                .into_iter()
-                .find(|n| n.name != peer.name)
-                .expect("a triangle leaves exactly one remaining peer");
-            let link = c
-                .network
-                .link_between(&node.name, &other.name)
-                .expect("the model check requires every pair to be joined");
-            let gateway = link
-                .address_of(&other.name)
-                .expect("the model check requires a well-formed /31");
-            assert!(
-                transit_routes[0].contains(&format!("Gateway={gateway}")),
-                "{}'s transit route to {} must go via {} at {gateway}",
-                node.name,
-                peer.name,
-                other.name
-            );
-        }
-
-        // Forwarding, or a node in the middle of a failover path drops the
-        // packets its own route table told a peer to send it.
-        let sysctl = files
-            .iter()
-            .find(|f| f.path == format!("{}/sysctl.d/90-cluster.conf", node.name))
-            .expect("every node renders a sysctl fragment");
-        assert!(sysctl.body.contains("net.ipv4.ip_forward=1"));
+    for expected in [
+        format!("direct_metric={}", c.network.routing.direct_metric),
+        format!("transit_metric={}", c.network.routing.transit_metric),
+        format!("loopback_base={}", c.network.addressing.loopback_base),
+        format!("link_base={}", c.network.addressing.link_base),
+        format!("fleet_size={}", c.cluster.fleet.size),
+    ] {
+        assert!(
+            policy.body.contains(&expected),
+            "the rendered policy must carry `{expected}`: a metric compiled into a binary \
+             and also written in the model is two sources for one number (§4.2)"
+        );
     }
+
+    // The transit metric must lose to the direct one, or failover never happens.
+    assert!(c.network.routing.direct_metric < c.network.routing.transit_metric);
+
+    // Forwarding, or a node in the middle of a failover path drops the packets
+    // its own route table told a peer to send it. Identity-free, so it is
+    // rendered rather than written at boot.
+    let sysctl = files
+        .iter()
+        .find(|f| f.path.ends_with("sysctl.d/90-cluster.conf"))
+        .expect("the sysctl fragment is rendered");
+    assert!(sysctl.body.contains("net.ipv4.ip_forward=1"));
 }
 
 /// `CD-03`: default drop, declared accepts, and mesh-only forwarding.
@@ -181,10 +137,10 @@ fn the_firewall_drops_by_default_cd_03() {
     let c = model();
     let files = rendered();
 
-    for node in &c.cluster.node {
+    for node in &c.nodes() {
         let nft = files
             .iter()
-            .find(|f| f.path == format!("{}/nftables.conf", node.name))
+            .find(|f| f.path == format!("node/nftables.conf"))
             .expect("every node renders a packet filter");
 
         assert!(
@@ -235,7 +191,7 @@ fn the_firewall_drops_by_default_cd_03() {
                 "{}: rule `{}` is restricted to {:?} and must not render here",
                 node.name,
                 rule.comment,
-                rule.nodes
+                rule.roles
             );
         }
 
@@ -250,58 +206,56 @@ fn the_firewall_drops_by_default_cd_03() {
     }
 }
 
-/// `CD-04`: names resolve from the node table, with no resolver.
+/// `CD-04`: every name resolves from the ordinals, with no resolver.
 #[test]
-fn names_resolve_from_the_node_table_cd_04() {
+fn names_resolve_from_the_ordinals_cd_04() {
     let c = model();
     let files = rendered();
-    let suffixes = &c.network.hosts;
 
-    for node in &c.cluster.node {
-        let hosts = files
-            .iter()
-            .find(|f| f.path == format!("{}/hosts", node.name))
-            .expect("every node renders a hosts file");
+    let hosts = files
+        .iter()
+        .find(|f| f.path == "node/hosts")
+        .expect("the hosts file is rendered");
 
-        for other in &c.cluster.node {
-            let mesh = format!(
-                "{}\t{}.{} {}",
-                other.loopback, other.name, suffixes.mesh_suffix, other.name
-            );
-            assert!(
-                hosts.body.contains(&mesh),
-                "{}: missing `{mesh}`",
-                node.name
-            );
-            let mgmt_addr = other
-                .mgmt_address
-                .split_once('/')
-                .map_or(other.mgmt_address.as_str(), |(a, _)| a);
-            let mgmt = format!("{mgmt_addr}\t{}.{}", other.name, suffixes.mgmt_suffix);
-            assert!(
-                hosts.body.contains(&mgmt),
-                "{}: missing `{mgmt}`",
-                node.name
-            );
+    // One file for the whole fleet. Nothing in it depends on which chassis is
+    // reading it, which is why it can be rendered when the `.network` files
+    // beside it cannot (§4.3).
+    for node in &c.nodes() {
+        let entry = format!("{}\t{}\t{}", node.loopback, node.fqdn, node.name);
+        assert!(
+            hosts.body.contains(&entry),
+            "missing `{entry}`; the hosts file must carry every ordinal"
+        );
+    }
+
+    // The bare cluster name is the entry point, and it resolves to the ordinal
+    // the storage role pins (§2.3.2, §4.3).
+    let storage = c
+        .node_with_role(&c.policy.drain.migration_target)
+        .expect("one ordinal holds the storage role");
+    let entry = format!("{}\t{}", storage.loopback, c.cluster.fleet.entry_name);
+    assert!(
+        hosts.body.contains(&entry),
+        "missing `{entry}`; a client that knows only the cluster name must find the \
+         control plane from it (§4.3)"
+    );
+
+    // No name the model does not derive. A hosts file that resolved a name
+    // nothing assigned would be a resolver by another route, and §4.3 declares
+    // there is none.
+    //
+    // There are deliberately no management names: those addresses come from
+    // DHCP, so there is nothing stable to name (§3.2).
+    for line in hosts.body.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
         }
-
-        // No name the model does not declare. A hosts file that resolved a name
-        // nothing assigned would be a resolver by another route, and §4.3
-        // declares there is none.
-        for line in hosts.body.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            for name in line.split_whitespace().skip(1) {
-                let known = name.starts_with("localhost")
-                    || c.cluster.node.iter().any(|n| {
-                        name == n.name
-                            || name == format!("{}.{}", n.name, suffixes.mesh_suffix)
-                            || name == format!("{}.{}", n.name, suffixes.mgmt_suffix)
-                    });
-                assert!(known, "{}: `{name}` is not a declared name", node.name);
-            }
+        for name in line.split_whitespace().skip(1) {
+            let known = name.starts_with("localhost")
+                || name == c.cluster.fleet.entry_name
+                || c.nodes().iter().any(|n| name == n.name || name == n.fqdn);
+            assert!(known, "`{name}` is not a name this fleet derives");
         }
     }
 }
@@ -313,19 +267,19 @@ fn every_volume_mount_carries_its_relabel_cd_05() {
     let files = rendered();
     let mut checked = 0usize;
 
-    for node in &c.cluster.node {
+    for node in &c.nodes() {
         let variant = c
             .images
-            .variant_for(&node.name)
-            .expect("the model check requires a variant per node");
+            .variant_for(&node.role)
+            .expect("the model check requires a variant per role");
         for quadlet in variant.all_quadlets(&c.images.base) {
             let unit = files
                 .iter()
                 .find(|f| {
                     f.path
                         == format!(
-                            "{}/containers-systemd/{}.{}",
-                            node.name, quadlet.name, quadlet.kind
+                            "node/containers-systemd/{}.{}",
+                            quadlet.name, quadlet.kind
                         )
                 })
                 .unwrap_or_else(|| panic!("{}: {} was not rendered", node.name, quadlet.name));
@@ -352,55 +306,87 @@ fn every_volume_mount_carries_its_relabel_cd_05() {
     assert!(checked > 0, "no volume mounts were checked");
 }
 
-/// `CD-06`: the isolation set renders on the measurement node alone.
+/// `CD-06`: the base kernel arguments carry no isolation, and one role's do.
+///
+/// This used to assert that `isolcpus=` appeared in exactly one node's rendered
+/// `kargs.d`. There is one image now (§8.4), so a `kargs.d` entry reaches all
+/// three machines --- and isolating two of the storage node's four cores would
+/// cost half its CPU to no purpose. The isolation moved to a per-role file that
+/// `cluster-init` applies once the role is known (§8.5), and the assertion moved
+/// with it.
 #[test]
-fn isolation_renders_on_one_node_alone_cd_06() {
+fn isolation_is_a_role_karg_and_never_a_base_one_cd_06() {
     let c = model();
     let files = rendered();
     let base = &c.images.base;
-    let mut isolated_nodes = Vec::new();
 
-    for node in &c.cluster.node {
-        let kargs = files
-            .iter()
-            .find(|f| f.path == format!("{}/kargs.d/10-cluster.toml", node.name))
-            .expect("every node renders kernel arguments");
+    let kargs = files
+        .iter()
+        .find(|f| f.path == "node/kargs.d/10-cluster.toml")
+        .expect("the base kernel arguments are rendered");
 
-        for karg in &base.content.kargs {
-            assert!(
-                kargs.body.contains(&format!("\"{karg}\"")),
-                "{}: missing base kernel argument `{karg}`",
-                node.name
-            );
-        }
-
-        let variant = c
-            .images
-            .variant_for(&node.name)
-            .expect("the model check requires a variant per node");
-        if let Some(isolation) = &variant.isolation {
-            isolated_nodes.push(node.name.clone());
-            assert!(
-                kargs
-                    .body
-                    .contains(&format!("\"isolcpus={}\"", isolation.isolated_cpus)),
-                "{}: isolcpus must name the CPUs the variant declares",
-                node.name
-            );
-            assert!(kargs.body.contains("\"nosmt\""), "{}: nosmt", node.name);
-        } else {
-            assert!(
-                !kargs.body.contains("isolcpus="),
-                "{}: declares no isolation but renders isolcpus (§2.3)",
-                node.name
-            );
-        }
+    for karg in &base.content.kargs {
+        assert!(
+            kargs.body.contains(&format!("\"{karg}\"")),
+            "missing base kernel argument `{karg}`"
+        );
     }
 
+    // The failure this replaced the old assertion to catch: one image boots all
+    // three roles, so an isolation karg here isolates every machine's cores.
+    //
+    // Read from the argument list and not from the file, because the file's own
+    // comment explains why `isolcpus=` is absent --- and a search over the whole
+    // body matches that sentence. A gate that cannot be described in the file it
+    // inspects is a gate nobody can write around honestly.
+    let declared: Vec<&str> = kargs
+        .body
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix('"'))
+        .filter_map(|l| l.strip_suffix("\","))
+        .collect();
+    assert!(!declared.is_empty(), "no kernel arguments were parsed");
+    for forbidden in ["isolcpus=", "nohz_full=", "nosmt"] {
+        assert!(
+            !declared.iter().any(|k| k.starts_with(forbidden) || *k == forbidden),
+            "the base kernel arguments carry `{forbidden}`, which would isolate the \
+             storage node's cores too (§8.4, §8.5)"
+        );
+    }
+
+    // Exactly one role declares isolation, and its rendered set carries it.
+    let mut isolated = Vec::new();
+    for role in &c.cluster.role {
+        let file = files
+            .iter()
+            .find(|f| f.path == format!("node/role-kargs-{}.conf", role.id))
+            .unwrap_or_else(|| panic!("`{}` renders no kernel-argument set", role.id));
+        let variant = c
+            .images
+            .variant_for(&role.id)
+            .expect("the model check requires a variant per role");
+        match &variant.isolation {
+            Some(isolation) => {
+                isolated.push(role.id.clone());
+                assert!(
+                    file.body
+                        .contains(&format!("isolcpus={}", isolation.isolated_cpus)),
+                    "`{}`: isolcpus must name the CPUs the variant declares",
+                    role.id
+                );
+                assert!(file.body.contains("nosmt"), "`{}`: nosmt", role.id);
+            }
+            None => assert!(
+                !file.body.contains("isolcpus="),
+                "`{}` declares no isolation but renders isolcpus (§2.3)",
+                role.id
+            ),
+        }
+    }
     assert_eq!(
-        isolated_nodes.len(),
+        isolated.len(),
         1,
-        "measurement is one node's job; {isolated_nodes:?} are isolated (§2.3)"
+        "measurement is one role's job; {isolated:?} are isolated (§2.3)"
     );
 }
 
@@ -410,11 +396,11 @@ fn the_kickstart_carries_no_secret_cd_07() {
     let c = model();
     let files = rendered();
 
-    for node in &c.cluster.node {
+    for node in &c.nodes() {
         let ks = files
             .iter()
-            .find(|f| f.path == format!("bootstrap/{}.ks", node.name))
-            .expect("every node renders a kickstart");
+            .find(|f| f.path == "bootstrap/node.ks")
+            .expect("the kickstart is rendered");
 
         for partition in &c.cluster.partition {
             assert!(
@@ -463,11 +449,11 @@ fn unattended_behaviour_is_rendered_from_policy_cd_08() {
     let files = rendered();
     let p = &c.policy;
 
-    for node in &c.cluster.node {
+    for node in &c.nodes() {
         let unit = |name: &str| -> String {
             files
                 .iter()
-                .find(|f| f.path == format!("{}/systemd/{name}", node.name))
+                .find(|f| f.path == format!("node/systemd/{name}"))
                 .unwrap_or_else(|| panic!("{}: {name} was not rendered", node.name))
                 .body
                 .clone()
@@ -481,11 +467,26 @@ fn unattended_behaviour_is_rendered_from_policy_cd_08() {
         )));
 
         let env = unit("cluster-updater.env");
-        assert!(env.contains(&format!("CLUSTER_UPDATE_POSITION={}", node.update_position)));
-        // Every peer's endpoint, because §13.2's ordering is a pure function of
-        // what the peers report and a node that cannot read one of them cannot
-        // evaluate it.
-        for peer in c.peers_of(&node.name) {
+        // Which node this is, is deliberately absent. One image boots all three
+        // ordinals (§8.4), so CLUSTER_UPDATE_POSITION is written at boot by
+        // cluster-init into /run/cluster/node.env, and the unit reads both files.
+        // Fleet facts are rendered and diff-gated; machine facts are discovered.
+        assert!(
+            !env.contains("CLUSTER_UPDATE_POSITION="),
+            "the rendered environment must not claim a position: it is the one input \
+             the image cannot carry (§8.4, §13.2)"
+        );
+        assert!(
+            env.contains("/run/cluster/node.env"),
+            "the rendered environment must name where the machine's own facts arrive"
+        );
+
+        // Every ordinal's endpoint, because §13.2's ordering is a pure function
+        // of what the peers report and a node that cannot read one of them
+        // cannot evaluate it. The whole fleet, not "the peers": which entry is
+        // this node is not known until boot, and the updater drops its own by
+        // matching CLUSTER_NODE.
+        for peer in c.nodes() {
             assert!(
                 env.contains(&format!(
                     "{}:{}:http://{}:{}/health",
@@ -512,7 +513,7 @@ fn unattended_behaviour_is_rendered_from_policy_cd_08() {
 
         let check = files
             .iter()
-            .find(|f| f.path.starts_with(&format!("{}/greenboot/", node.name)))
+            .find(|f| f.path.starts_with(&format!("node/greenboot/")))
             .expect("every node renders a greenboot check");
         assert!(
             check
@@ -526,7 +527,11 @@ fn unattended_behaviour_is_rendered_from_policy_cd_08() {
         assert!(check.body.contains("/api/rollout/quarantine"));
 
         let health = unit("cluster-health.service");
-        assert!(health.contains(&format!("{}:{}", node.loopback, p.health.port)));
+        // The port is a model fact and is rendered; the address is this
+        // machine's loopback, which follows from an ordinal it does not have
+        // until boot (§4.1, §8.4).
+        assert!(health.contains(&format!("${{CLUSTER_LOOPBACK}}:{}", p.health.port)));
+        assert!(health.contains("/run/cluster/node.env"));
     }
 
     // Reclamation runs where the session database and the snapshots are, and
@@ -535,10 +540,18 @@ fn unattended_behaviour_is_rendered_from_policy_cd_08() {
         .iter()
         .filter(|f| f.path.ends_with("cluster-reclaim.timer"))
         .collect();
-    assert_eq!(reclaim.len(), 1, "reclamation runs on one node");
-    assert!(reclaim[0]
-        .path
-        .starts_with(&format!("{}/", p.drain.migration_target)));
+    // One unit, shipped on every machine and started on one. It is gated by the
+    // role marker rather than by which image was installed, because there is one
+    // image (§8.4) --- and a unit whose condition is unmet is skipped, not
+    // failed, which is what keeps §10.1's "no failed units" check honest.
+    assert_eq!(reclaim.len(), 1, "reclamation is one unit");
+    assert!(
+        reclaim[0].body.contains(&format!(
+            "ConditionPathExists=/run/cluster/role.{}",
+            p.drain.migration_target
+        )),
+        "reclamation must be gated on the role that holds the session database (§15.3)"
+    );
 }
 
 /// `CD-09`: the committed tree equals the render and is fully asserted about.
@@ -618,14 +631,23 @@ fn a_devcontainer_alias_survives_migration_cd_10() {
 
     assert!(ssh.body.contains("Host dc-*"), "no devcontainer alias");
 
-    let control = c
-        .cluster
-        .node(&c.policy.drain.migration_target)
-        .expect("the model check requires the migration target to be a declared node");
+    let control = c.node_with_role(&c.policy.drain.migration_target)
+        .expect("the model check requires the migration target to be a declared role");
+    // By the control plane's *tailnet* name, not by an address. A client is not
+    // on the mesh, and management addresses come from DHCP (§3.2), so MagicDNS
+    // is the only stable way a client reaches a node (§4.5).
+    let host = format!(
+        "{}.{}.{}",
+        control.name, c.cluster.tailnet, c.cluster.magic_dns_suffix
+    );
     assert!(
-        ssh.body
-            .contains(&format!("http://{}:8080/api/sessions/", control.loopback)),
+        ssh.body.contains(&format!("http://{host}:8080/api/sessions/")),
         "the alias must resolve the session's current host from the control plane (§11.1)"
+    );
+    assert!(
+        !ssh.body.contains(&control.loopback),
+        "a mesh loopback is unreachable from a client, and putting one here would make \
+         the alias work only from inside the cluster (§3.2, §4.5)"
     );
 
     // §16.5: the UI is a management surface, not a dependency. `ssh dc-<id>`
@@ -648,10 +670,10 @@ fn trust_and_pull_order_render_from_the_model_cd_11() {
     let files = rendered();
     let signing = &c.images.signing;
 
-    for node in &c.cluster.node {
+    for node in &c.nodes() {
         let policy = files
             .iter()
-            .find(|f| f.path == format!("{}/containers/policy.json", node.name))
+            .find(|f| f.path == format!("node/containers/policy.json"))
             .expect("every node renders a signature policy");
 
         // Default reject. A default of `insecureAcceptAnything` would make every
@@ -678,13 +700,11 @@ fn trust_and_pull_order_render_from_the_model_cd_11() {
 
         let registries = files
             .iter()
-            .find(|f| f.path == format!("{}/containers/registries.conf", node.name))
+            .find(|f| f.path == format!("node/containers/registries.conf"))
             .expect("every node renders a registry configuration");
 
-        let storage = c
-            .cluster
-            .node(&c.policy.drain.migration_target)
-            .expect("the migration target is a declared node");
+        let storage = c.node_with_role(&c.policy.drain.migration_target)
+            .expect("the migration target is a declared role");
         let local = format!("{}:{}", storage.loopback, c.images.registries.port);
         assert!(registries.body.contains(&local));
 
@@ -729,10 +749,8 @@ fn trust_and_pull_order_render_from_the_model_cd_11() {
         .iter()
         .find(|f| f.path.ends_with("containers-systemd/zot.container"))
         .expect("the registry Quadlet is rendered");
-    let storage = c
-        .cluster
-        .node(&c.policy.drain.migration_target)
-        .expect("the migration target is a declared node");
+    let storage = c.node_with_role(&c.policy.drain.migration_target)
+        .expect("the migration target is a declared role");
     assert!(zot
         .body
         .contains(&format!("PublishPort={}:5000", storage.loopback)));
@@ -752,7 +770,7 @@ fn every_declared_alert_renders_as_a_rule_cd_13() {
 
     let rules = files
         .iter()
-        .find(|f| f.path == format!("{storage}/prometheus/alerts.yml"))
+        .find(|f| f.path == "node/prometheus/alerts.yml")
         .expect("the alert rules are rendered");
 
     assert!(
@@ -812,14 +830,12 @@ fn every_declared_alert_renders_as_a_rule_cd_13() {
 fn the_registry_mirrors_and_caches_as_declared_cs_04() {
     let c = model();
     let files = rendered();
-    let storage = c
-        .cluster
-        .node(&c.policy.drain.migration_target)
-        .expect("the migration target is a declared node");
+    let storage = c.node_with_role(&c.policy.drain.migration_target)
+        .expect("the migration target is a declared role");
 
     let config = files
         .iter()
-        .find(|f| f.path == format!("{}/zot/config.json", storage.name))
+        .find(|f| f.path == "node/zot/config.json")
         .expect("the registry configuration is rendered");
 
     // Bound to the mesh loopback: the registry is a mesh service and §4.4 opens
@@ -860,15 +876,13 @@ fn the_registry_mirrors_and_caches_as_declared_cs_04() {
 fn an_ssh_session_records_an_attachment_cg_07() {
     let c = model();
     let files = rendered();
-    let control = c
-        .cluster
-        .node(&c.policy.drain.migration_target)
-        .expect("the migration target is a declared node");
+    let control = c.node_with_role(&c.policy.drain.migration_target)
+        .expect("the migration target is a declared role");
 
-    for node in &c.cluster.node {
+    for node in &c.nodes() {
         let hook = files
             .iter()
-            .find(|f| f.path == format!("{}/sshrc", node.name))
+            .find(|f| f.path == format!("node/sshrc"))
             .expect("every node renders the attachment hook");
 
         // `sshrc`, not a profile script: scp, rsync and a VS Code server
@@ -902,11 +916,11 @@ fn host_policy_is_rendered_not_declared_twice_cd_14() {
     let selinux = &c.images.base.selinux;
     let greenboot = &c.policy.greenboot;
 
-    for node in &c.cluster.node {
+    for node in &c.nodes() {
         let read = |suffix: &str| -> String {
             files
                 .iter()
-                .find(|f| f.path == format!("{}/{suffix}", node.name))
+                .find(|f| f.path == format!("node/{suffix}"))
                 .unwrap_or_else(|| panic!("{}: {suffix} is not rendered", node.name))
                 .body
                 .clone()
@@ -980,21 +994,19 @@ fn host_policy_is_rendered_not_declared_twice_cd_14() {
 fn the_control_plane_is_published_on_the_tailnet_cd_15() {
     let c = model();
     let files = rendered();
-    let node = c
-        .cluster
-        .node(&c.policy.drain.migration_target)
-        .expect("the migration target is a declared node");
+    let node = c.node_with_role(&c.policy.drain.migration_target)
+        .expect("the migration target is a declared role");
 
     let unit = files
         .iter()
-        .find(|f| f.path == format!("{}/systemd/tailscale-serve.service", node.name))
+        .find(|f| f.path == format!("node/systemd/tailscale-serve.service"))
         .expect("the control plane is published");
 
     // The same address the control plane binds. A publish unit pointing
     // somewhere else would succeed and serve nothing.
     let control = files
         .iter()
-        .find(|f| f.path == format!("{}/systemd/cluster-ctl.service", node.name))
+        .find(|f| f.path == format!("node/systemd/cluster-ctl.service"))
         .expect("the control plane unit is rendered");
     assert!(control.body.contains(&format!("{}:8080", node.loopback)));
     assert!(unit
@@ -1031,7 +1043,7 @@ fn the_control_plane_is_published_on_the_tailnet_cd_15() {
     // advertised, and a policy that auto-approved a mesh prefix would make the
     // closed segment §4.4 relies on reachable from a laptop.
     assert!(acl.body.contains(&c.network.lan_prefix));
-    for n in &c.cluster.node {
+    for n in &c.nodes() {
         assert!(
             !acl.body.contains(&n.loopback),
             "{}: the mesh is never advertised (§4.5)",

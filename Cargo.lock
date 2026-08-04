@@ -251,6 +251,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cluster-init"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cluster-model"
 version = "0.1.0"
 dependencies = [

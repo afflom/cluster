@@ -1,57 +1,73 @@
-# model/network.toml --- planes, links, routes, firewall (SPEC.md §3.2, §4).
+# model/network.toml --- interface classes, addressing, routes, firewall
+# (SPEC.md §3.1, §3.2, §4).
 #
-# The route table is *derived* from this file and never written (§4.2). A
-# triangle with only direct routes is not resilient: one failed link partitions
-# two nodes that can physically reach each other through the third. So each node
-# holds two routes to each peer loopback --- direct at metric 100, transit at
-# metric 200 --- and `systemd-networkd` withdraws the direct one on carrier
-# loss, which is why failover needs no daemon.
+# Two things here are arithmetic rather than tables, and both used to be tables.
 #
-# The renderer computes the transit route rather than reading it from here. A
-# transit hop written by hand is a second source for a fact the topology already
-# determines, which is what R1 forbids.
+# **Interfaces are classified, not named.** There is no MAC and no interface
+# name anywhere in this file. A port is `mesh` if its driver reports support for
+# 10GBase-T and `lan` otherwise, which is a property of the card rather than of
+# a file in a repository (§3.1). The classifier reads *supported* modes and not
+# the negotiated speed: a mesh port is down exactly when the peer it waits for
+# has not booted, and a down port reports no speed at all.
+#
+# **Addresses are derived from ordinals.** `[addressing]` declares two bases and
+# the renderer and the node compute the same answers from them, so a link
+# prefix is never written against a pair of machines (§4.1). The previous
+# revision declared three `[[link]]` tables naming `n1`, `n2` and `n3`; those
+# names no longer exist.
+#
+# The route table is *derived* and never written (§4.2). A triangle with only
+# direct routes is not resilient: one failed link partitions two nodes that can
+# physically reach each other through the third. So each node holds two routes
+# to each peer loopback --- direct at metric 100, transit at metric 200 --- and
+# `systemd-networkd` withdraws the direct one on carrier loss, which is why
+# failover needs no daemon.
 
 spec = "cluster/1"
 
 # The prefix the management plane's SSH and node_exporter ports are opened to
 # (§4.4). Nothing outside it reaches a node except over Tailscale.
+#
+# This is a property of the LAN the fleet is plugged into, not of any machine:
+# management addresses themselves are handed out by DHCP and are not declared
+# anywhere (§3.2).
 lan_prefix = "192.168.20.0/24"
 
 # ---------------------------------------------------------------------------
-# Planes (§3.2)
+# Interface classes (§3.1)
+#
+# `min_speed_mbps` is read against the driver's *supported* link modes. `count`
+# is what a conforming machine must present; the classifier fails the boot on
+# any other number rather than configuring what it found, because a node that
+# quietly came up with one mesh port would join with no redundancy and nothing
+# would say so.
 # ---------------------------------------------------------------------------
 
-[[plane]]
-id = "mgmt"
-interfaces = ["mgmt"]
-mtu = 1500
-# The only plane with a default route. Nodes need outbound WAN to pull from
-# GHCR when Zot is unreachable --- which it is, by design, during n1's own
-# reboot (§14.2). The mesh has no gateway and must not acquire one.
-gateway = "192.168.20.1"
-# §4.3 declares no *cluster* DNS: three nodes with static addresses do not
-# justify a resolver. This is the upstream resolver for everything that is not
-# a cluster name, and /etc/hosts still answers first.
-dns = ["192.168.20.1"]
-description = "LAN, SSH, Tailscale. One 1GbE port to an 8-port switch."
-
-[[plane]]
+[[class]]
 id = "mesh"
-interfaces = ["mesh_a", "mesh_b"]
+min_speed_mbps = 10000
+count = 2
 mtu = 9000
+addressing = "derived"
 description = "Node-to-node only. Direct-attached 10GBase-T, no switch."
 
-[[plane]]
-id = "bmc"
-interfaces = ["bmc"]
+[[class]]
+id = "lan"
+min_speed_mbps = 1000
+# At least one. The board has two 1GbE ports and the second is deliberately
+# left without an address --- a spare for physical fault diagnosis.
+count = 1
 mtu = 1500
-# X10-generation BMCs have a poor CVE history and are the one component this
-# pipeline cannot update. Isolation is not optional.
-description = "Isolated VLAN. Never routed to WAN."
+# DHCP, because there is no per-machine fact to make it static from. Nothing in
+# the cluster reaches a node by its management address; §4.3's names are all on
+# mesh loopbacks.
+addressing = "dhcp"
+description = "LAN, SSH, Tailscale. One 1GbE port to an 8-port switch."
 
-# The second 1GbE port is deliberately unconfigured --- a spare for physical
-# fault diagnosis, and declaring it would render a `.network` file that claims
-# an address the port does not have.
+# The BMC is not classified. It is out-of-band, the host cannot see it, and it
+# is configured in firmware (§2.4, §3.2). X10-generation BMCs have a poor CVE
+# history and are the one component this pipeline cannot update, so the VLAN it
+# sits on is never routed to WAN.
 
 # ---------------------------------------------------------------------------
 # Topology (§4.1). `n <= 3` is structural: the mesh needs one 10 GbE port per
@@ -63,37 +79,42 @@ description = "Isolated VLAN. Never routed to WAN."
 kind = "direct-triangle"
 max_nodes = 3
 
-# /31 point-to-point per RFC 3021: exactly two hosts, no network or broadcast
-# address. `a` takes the even address, `b` the odd one.
-[[link]]
-id = "l12"
-prefix = "10.10.0.0/31"
-a = "n1"
-b = "n2"
-a_interface = "mesh_a"
-b_interface = "mesh_a"
-
-[[link]]
-id = "l13"
-prefix = "10.10.0.2/31"
-a = "n1"
-b = "n3"
-a_interface = "mesh_b"
-b_interface = "mesh_a"
-
-[[link]]
-id = "l23"
-prefix = "10.10.0.4/31"
-a = "n2"
-b = "n3"
-a_interface = "mesh_b"
-b_interface = "mesh_b"
+# The arithmetic that turns an ordinal into an address (§4.1).
+#
+# A node's loopback is `loopback_base + ordinal`. A link's prefix is
+# `link_base + 2 * index`, where `index` is the position of the unordered pair
+# of ordinals in ascending order --- so both ends compute the same prefix from
+# the same two numbers without exchanging it. /31 per RFC 3021: exactly two
+# hosts, no network or broadcast address, and **the lower ordinal takes the even
+# address**, which is what makes the two ends agree with no negotiation.
+[addressing]
+loopback_base = "10.10.255.0"
+loopback_prefix_len = 32
+link_base = "10.10.0.0"
+link_prefix_len = 31
 
 [routing]
 # On every node, so a transit route has something to transit.
 ip_forward = true
 direct_metric = 100
 transit_metric = 200
+
+# ---------------------------------------------------------------------------
+# Peer discovery (§3.3). How a node learns which peer is on the far end of a
+# given cable, which is the one fact it cannot derive.
+#
+# IPv6 link-local multicast on the mesh port alone: always available on an
+# Ethernet link, needing no allocation and no agreement, and a direct-attached
+# segment has exactly two endpoints so the only listener is the peer.
+# ---------------------------------------------------------------------------
+
+[discovery]
+group = "ff02::1"
+port = 4790
+interval_ms = 500
+# How long a node waits for a peer before reporting the link unpeered. Longer
+# than a cold boot, because the peer may not have been powered on yet (§12.1).
+timeout_s = 300
 
 # ---------------------------------------------------------------------------
 # Firewall (§4.4). Default drop on input; every accept below is a declared one.
@@ -110,25 +131,32 @@ forward_policy = "drop"
 output_policy = "accept"
 
 [[firewall.rule]]
-plane = "mgmt"
+plane = "lan"
 protocol = "tcp"
 port = 22
 source = "lan"
 comment = "SSH from the LAN"
 
 [[firewall.rule]]
-plane = "mgmt"
+plane = "lan"
 protocol = "tcp"
 port = 9100
 source = "lan"
 comment = "node_exporter scrape"
 
 [[firewall.rule]]
-plane = "mgmt"
+plane = "lan"
 protocol = "icmp"
 port = 0
 source = "lan"
 comment = "echo request"
+
+[[firewall.rule]]
+plane = "mesh"
+protocol = "udp"
+port = 4790
+source = "link-local"
+comment = "peer discovery, IPv6 link-local multicast on a mesh port (§3.3)"
 
 [[firewall.rule]]
 plane = "tailscale"
@@ -137,12 +165,16 @@ port = 22
 source = "tailnet"
 comment = "SSH off-LAN"
 
+# Restricted to a role rather than to a node, and therefore not in the ruleset
+# every machine carries. One image means one `nftables.conf`, so a rule that is
+# true of one role only is rendered into its own include and linked into place
+# by `cluster-init` once the role is known (§8.4).
 [[firewall.rule]]
 plane = "tailscale"
 protocol = "tcp"
 port = 443
 source = "tailnet"
-nodes = ["n1"]
+roles = ["storage"]
 comment = "cluster-ctl, published by tailscale serve"
 
 [[firewall.rule]]
@@ -160,11 +192,26 @@ source = "any"
 comment = "loopback"
 
 # ---------------------------------------------------------------------------
-# Name resolution (§4.3). No DNS service: three nodes with static addresses do
-# not justify a resolver, and a hosts file has no failure mode of its own. The
-# entries are derived from `model/cluster.toml`; only the suffixes are declared.
+# Name resolution (§4.3). No DNS service: three nodes do not justify a resolver,
+# and a hosts file has no failure mode of its own.
+#
+# The names come from `model/cluster.toml`'s `domain` and `name_template`, and
+# the addresses from the arithmetic above. There are no management names: those
+# addresses are handed out by DHCP, so there is nothing stable to name and
+# nothing in the cluster that needs one (§3.2).
+#
+# This file *is* rendered, and it is byte-identical on every machine: every name
+# maps to an ordinal, every ordinal derives its own loopback, and `devcluster`
+# maps to ordinal 1 because the storage role pins it. A machine does not need to
+# know which node it is to know where all three are.
+#
+# `path` is where a boot-time unit places it --- a container build cannot write
+# /etc/hosts, which is bind-mounted and busy under `RUN` and silently dropped
+# under `COPY`. Both were observed.
 # ---------------------------------------------------------------------------
 
 [hosts]
-mesh_suffix = "mesh"
-mgmt_suffix = "mgmt"
+path = "/etc/hosts"
+# Written beside the file and renamed over it, so a node that loses power
+# mid-write finds either the old file or the new one and never half of one.
+staging_path = "/run/cluster/hosts.new"

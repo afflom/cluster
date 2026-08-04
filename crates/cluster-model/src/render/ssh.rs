@@ -17,9 +17,8 @@ use crate::Cluster;
 
 pub(crate) fn render(c: &Cluster) -> Rendered {
     let control = c
-        .cluster
-        .node(&c.policy.drain.migration_target)
-        .expect("the model check requires the migration target to be a declared node");
+        .node_with_role(&c.policy.drain.migration_target)
+        .expect("the model check requires the migration target to be a declared role");
 
     let mut body = String::new();
     body.push_str(
@@ -38,15 +37,15 @@ pub(crate) fn render(c: &Cluster) -> Rendered {
     body.push_str("  PasswordAuthentication no\n");
     body.push_str("  KbdInteractiveAuthentication no\n\n");
 
-    body.push_str("# The nodes themselves, on the management plane. Reachable over Tailscale\n");
-    body.push_str("# off-LAN with no change to these entries (§4.5).\n");
-    for node in &c.cluster.node {
-        let addr = node
-            .mgmt_address
-            .split_once('/')
-            .map_or(node.mgmt_address.as_str(), |(a, _)| a);
+    body.push_str("# The nodes themselves, by their tailnet names.\n");
+    body.push_str("#\n");
+    body.push_str("# Not by address: management addresses come from DHCP (§3.2), so there is\n");
+    body.push_str("# no per-machine address left to write down. MagicDNS is what makes a node\n");
+    body.push_str("# reachable at a stable name, and it works identically on the LAN and off\n");
+    body.push_str("# it (§4.5), which the two entries this replaced did not.\n");
+    for node in c.nodes() {
         body.push_str(&format!("\nHost {}\n", node.name));
-        body.push_str(&format!("  HostName {addr}\n"));
+        body.push_str(&format!("  HostName {}\n", tailnet_name(c, &node.name)));
         body.push_str("  User root\n");
     }
 
@@ -66,8 +65,17 @@ pub(crate) fn render(c: &Cluster) -> Rendered {
              [ -n \"$host\" ] && [ \"$host\" != null ] || \\\n    \
              host=$(grep \"^%h \" ~/.ssh/cluster-sessions 2>/dev/null | cut -d\" \" -f2); \\\n    \
              exec nc \"$host\" 22'\n",
-        control.loopback
+        tailnet_name(c, &control.name)
     ));
 
     Rendered::new("ssh_config", vec!["CD-10"], body)
+}
+
+/// A node's name on the tailnet, which is the only stable way a client reaches
+/// one (§3.2, §4.5).
+fn tailnet_name(c: &Cluster, name: &str) -> String {
+    format!(
+        "{name}.{}.{}",
+        c.cluster.tailnet, c.cluster.magic_dns_suffix
+    )
 }

@@ -14,19 +14,23 @@ Host *
   PasswordAuthentication no
   KbdInteractiveAuthentication no
 
-# The nodes themselves, on the management plane. Reachable over Tailscale
-# off-LAN with no change to these entries (§4.5).
+# The nodes themselves, by their tailnet names.
+#
+# Not by address: management addresses come from DHCP (§3.2), so there is
+# no per-machine address left to write down. MagicDNS is what makes a node
+# reachable at a stable name, and it works identically on the LAN and off
+# it (§4.5), which the two entries this replaced did not.
 
-Host n1
-  HostName 192.168.20.11
+Host node1
+  HostName node1.afflom.ts.net
   User root
 
-Host n2
-  HostName 192.168.20.12
+Host node2
+  HostName node2.afflom.ts.net
   User root
 
-Host n3
-  HostName 192.168.20.13
+Host node3
+  HostName node3.afflom.ts.net
   User root
 
 # Devcontainer sessions. The ProxyCommand asks the control plane which node
@@ -39,7 +43,7 @@ Host n3
 Host dc-*
   User vscode
   ProxyCommand sh -c 'host=$(curl --silent --max-time 3 \
-    "http://10.10.255.1:8080/api/sessions/$(echo %h | cut -c4-)/connect" \
+    "http://node1.afflom.ts.net:8080/api/sessions/$(echo %h | cut -c4-)/connect" \
     | jq -r .host 2>/dev/null); \
     [ -n "$host" ] && [ "$host" != null ] || \
     host=$(grep "^%h " ~/.ssh/cluster-sessions 2>/dev/null | cut -d" " -f2); \

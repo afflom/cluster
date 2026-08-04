@@ -413,12 +413,12 @@ impl Drop for Guest {
 
 /// Boot every node and wait for all of them (§10.3).
 pub fn boot_mesh(cluster: &Cluster, fixture: &Fixture) -> Result<Vec<Guest>, GuestError> {
-    // In model order, because a socket netdev's listener must be up before its
-    // connector attaches --- and `a` listens, which is the node holding the even
-    // address of the /31.
+    // In ordinal order, because a socket netdev's listener must be up before its
+    // connector attaches --- and the lower ordinal listens, being the one that
+    // holds the even address of the /31 (§4.1).
     let mut guests = Vec::new();
-    for node in &cluster.cluster.node {
-        guests.push(Guest::boot(cluster, node, fixture)?);
+    for node in cluster.nodes() {
+        guests.push(Guest::boot(cluster, &node, fixture)?);
     }
     for guest in &guests {
         guest.wait_for_ssh(BOOT_TIMEOUT_S)?;

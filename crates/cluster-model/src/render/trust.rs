@@ -15,14 +15,14 @@
 //! over WAN rather than failing --- which is what makes §14.2 a stated window
 //! rather than an outage.
 
-use crate::render::Rendered;
-use crate::{Cluster, Node};
+use crate::render::{node_path, Rendered};
+use crate::Cluster;
 
-pub(crate) fn render(c: &Cluster, node: &Node) -> Vec<Rendered> {
-    vec![policy(c, node), registries(c, node)]
+pub(crate) fn render(c: &Cluster) -> Vec<Rendered> {
+    vec![policy(c), registries(c)]
 }
 
-fn policy(c: &Cluster, node: &Node) -> Rendered {
+fn policy(c: &Cluster) -> Rendered {
     let s = &c.images.signing;
     let repository = format!("{}/{}", "ghcr.io", s.repository);
 
@@ -82,30 +82,28 @@ fn policy(c: &Cluster, node: &Node) -> Rendered {
     body.push_str("}\n");
 
     Rendered::new(
-        format!("{}/containers/policy.json", node.name),
+        node_path("containers/policy.json"),
         vec!["CD-11", "CL-01"],
         body,
     )
 }
 
-fn registries(c: &Cluster, node: &Node) -> Rendered {
+fn registries(c: &Cluster) -> Rendered {
     let r = &c.images.registries;
     // The registry runs where the data volume is, and that node's loopback is a
     // model fact --- derived, never written down a second time.
     let host = c
-        .cluster
-        .node(&c.policy.drain.migration_target)
+        .node_with_role(&c.policy.drain.migration_target)
         .expect("the model check requires the migration target to be a declared node");
     let local = format!("{}:{}", host.loopback, r.port);
 
     let mut body = String::new();
     body.push_str(&format!(
-        "# Where {} pulls from. The local registry first, then the fallbacks.\n\
+        "# Where a node pulls from. The local registry first, then the fallbacks.\n\
          #\n\
-         # Zot is unreachable during {}'s own reboot --- by design --- and a pull\n\
+         # Zot is unreachable during the storage node's own reboot --- by design --- and a pull\n\
          # that failed then would turn §14.2's stated window into an outage. The\n\
-         # fallbacks are what make the window a degradation instead.\n\n",
-        node.name, host.name
+         # fallbacks are what make the window a degradation instead.\n\n"
     ));
 
     body.push_str("unqualified-search-registries = [\"ghcr.io\", \"docker.io\"]\n\n");
@@ -127,7 +125,7 @@ fn registries(c: &Cluster, node: &Node) -> Rendered {
     }
 
     Rendered::new(
-        format!("{}/containers/registries.conf", node.name),
+        node_path("containers/registries.conf"),
         vec!["CD-11", "CL-02"],
         body,
     )

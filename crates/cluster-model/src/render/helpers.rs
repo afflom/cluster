@@ -15,21 +15,23 @@
 //! rotation, which is what a drain wants and what a long-lived daemon would make
 //! hard.
 
-use crate::render::Rendered;
-use crate::{Cluster, Node};
+use crate::render::{node_path, Rendered};
+use crate::{Cluster, Role};
 
-pub(crate) fn render(c: &Cluster, node: &Node) -> Vec<Rendered> {
-    let mut out = Vec::new();
-    let Some(variant) = c.images.variant_for(&node.name) else {
-        return out;
-    };
-    if !variant.runner.is_empty() {
-        out.push(runner_loop(c, node));
+pub(crate) fn render(c: &Cluster) -> Vec<Rendered> {
+    let mut out = vec![sshrc(c)];
+    // One script per role that hosts runners, all of them shipped on every
+    // machine. The unit that invokes one is gated on the role marker, so the
+    // script a machine never runs is a few hundred bytes it never reads (§8.4).
+    for role in &c.cluster.role {
+        let Some(variant) = c.images.variant_for(&role.id) else {
+            continue;
+        };
+        if !variant.runner.is_empty() {
+            out.push(runner_loop(c, role));
+        }
     }
-    if node.name == c.policy.drain.migration_target {
-        out.push(zot_gc(c, node));
-    }
-    out.push(sshrc(c, node));
+    out.push(zot_gc(c));
     out
 }
 
@@ -44,14 +46,13 @@ pub(crate) fn render(c: &Cluster, node: &Node) -> Vec<Rendered> {
 /// `sshrc` runs for every session, non-interactive included, which is why it is
 /// this and not a profile script: `scp`, `rsync` and a VS Code server starting
 /// are all attachments and none of them sources a profile.
-fn sshrc(c: &Cluster, node: &Node) -> Rendered {
+fn sshrc(c: &Cluster) -> Rendered {
     let control = c
-        .cluster
-        .node(&c.policy.drain.migration_target)
+        .node_with_role(&c.policy.drain.migration_target)
         .expect("the model check requires the migration target to be a declared node");
 
     let body = format!(
-        "# Runs for every SSH session on {}, interactive or not (§15.1).\n\
+        "# Runs for every SSH session, interactive or not (§15.1).\n\
          #\n\
          # scp, rsync and a VS Code server starting are all attachments, and none of\n\
          # them sources a profile --- which is why this is sshrc and not profile.d.\n\
@@ -63,31 +64,31 @@ fn sshrc(c: &Cluster, node: &Node) -> Rendered {
            /usr/bin/curl --silent --fail --max-time 2 --request POST \\\n    \
              \"http://{}:8080/api/sessions/${{CLUSTER_SESSION}}/attached\" >/dev/null 2>&1 || true\n\
          fi\n",
-        node.name, control.loopback
+        control.loopback
     );
 
-    Rendered::new(format!("{}/sshrc", node.name), vec!["CD-12", "CG-07"], body)
+    Rendered::new(node_path("sshrc"), vec!["CD-12", "CG-07"], body)
 }
 
 /// Register one ephemeral runner, take one job, exit.
-fn runner_loop(c: &Cluster, node: &Node) -> Rendered {
+fn runner_loop(c: &Cluster, role: &Role) -> Rendered {
     let variant = c
         .images
-        .variant_for(&node.name)
+        .variant_for(&role.id)
         .expect("the caller checked there is a variant");
     let concurrency = variant.runner.iter().filter_map(|r| r.concurrency).min();
 
     let mut body = String::new();
     body.push_str(&format!(
         "#!/usr/bin/env bash\n\
-         # One ephemeral runner registration on {}, taken one job at a time.\n\
+         # One ephemeral runner registration for the `{}` role, one job at a time.\n\
          #\n\
          # The unit restarts this after every job, which is what makes draining a\n\
          # matter of not re-registering rather than of killing work: stopping the\n\
          # unit lets the job in flight finish and takes the runner out of rotation\n\
          # (§14.1).\n\
          set -euo pipefail\n\n",
-        node.name
+        role.id
     ));
 
     body.push_str(
@@ -135,20 +136,23 @@ fn runner_loop(c: &Cluster, node: &Node) -> Rendered {
     ));
 
     Rendered::new(
-        format!("{}/libexec/runner-loop", node.name),
+        node_path(format!("libexec/runner-loop-{}", role.id)),
         vec!["CD-12", "CW-02"],
         body,
     )
 }
 
 /// Collect registry storage (§5.5).
-fn zot_gc(c: &Cluster, node: &Node) -> Rendered {
+fn zot_gc(c: &Cluster) -> Rendered {
     let gc = &c.policy.gc;
-    let registry = format!("{}:{}", node.loopback, c.images.registries.port);
+    let host = c
+        .node_with_role(&c.policy.drain.migration_target)
+        .expect("the model check requires the migration target to be a declared role");
+    let registry = format!("{}:{}", host.loopback, c.images.registries.port);
 
     let body = format!(
         "#!/usr/bin/env bash\n\
-         # Registry collection on {}: untagged manifests older than {} days go.\n\
+         # Registry collection: untagged manifests older than {} days go.\n\
          #\n\
          # Tagged manifests never do. `:stable` is what every node follows, and a\n\
          # collection that removed the digest a node had not yet pulled would turn\n\
@@ -163,8 +167,8 @@ fn zot_gc(c: &Cluster, node: &Node) -> Rendered {
            || echo 'zot-gc: the registry declined; it collects on its own schedule' >&2\n\n\
          # Container storage on this node, which Zot does not own.\n\
          /usr/bin/podman system prune --force --filter until={}h\n",
-        node.name, gc.registry_untagged_max_age_days, gc.container_image_max_age_h
+        gc.registry_untagged_max_age_days, gc.container_image_max_age_h
     );
 
-    Rendered::new(format!("{}/libexec/zot-gc", node.name), vec!["CD-12"], body)
+    Rendered::new(node_path("libexec/zot-gc"), vec!["CD-12"], body)
 }

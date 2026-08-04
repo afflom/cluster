@@ -34,7 +34,7 @@ recheck_before_apply_s = 30
 peer_health_timeout_s = 5
 peer_health_port = 9101
 # Registry order: local Zot first, GHCR on failure --- which it is, by design,
-# during n1's own reboot (§5.4, §13.1).
+# during the storage node's own reboot (§5.4, §13.1).
 registries = ["10.10.255.1:5000", "ghcr.io"]
 image_repository = "ghcr.io/afflom/cluster"
 stable_tag = "stable"
@@ -81,15 +81,17 @@ budget_s = 21600
 on_exceed = "halt"
 
 [drain]
-# n1 has 4 cores and 32 GB and is already running the storage services and two
+# The storage node has 4 cores and 32 GB and is already running the storage services and two
 # CI runners. Beyond this cap the excess is stopped with notice rather than
 # migrated, and T2 asserts the cap is enforced rather than exceeded silently
 # (§14.3).
 migration_memory_cap_gib = 12
-migration_target = "n1"
-# Nothing migrates to n3, ever. Receiving work would void the isolation
+# A role, not a machine. Which chassis receives a migrated workload is not a
+# fact this repository holds any more; which role does is (§2.3, §14.1).
+migration_target = "storage"
+# Nothing migrates to the testbed, ever. Receiving work would void the isolation
 # guarantee it exists to provide (§2.3, §14.1).
-never_receives = ["n3"]
+never_receives = ["testbed"]
 container_stop_grace_s = 30
 
 # ---------------------------------------------------------------------------
@@ -206,7 +208,7 @@ severity = "warning"
 
 [[alert]]
 id = "bench-contention"
-condition = "a process on n3's isolated CPUs that is not the measurement job"
+condition = "a process on the testbed's isolated CPUs that is not the measurement job"
 for_s = 60
 severity = "warning"
 
@@ -235,7 +237,8 @@ severity = "info"
 token_cache_ttl_s = 300
 # Requests to api.github.com give up after this. A control plane that blocked on
 # a slow validation would make an unreachable GitHub look like an unreachable
-# n1, which §16.3's disconnected state already cannot distinguish enough things.
+# the storage node, which §16.3's disconnected state already cannot distinguish
+# enough things.
 validation_timeout_s = 10
 # The origin the Pages copy is served from. CORS is exact-origin rather than a
 # wildcard: the API answers a management surface, and `*` would let any page

@@ -22,13 +22,16 @@ pub mod policy;
 pub mod render;
 
 pub use cluster::{
-    ClusterFile, Disk, Firmware, GithubApp, Macs, Node, NodeStorage, Partition, Profile,
+    ClusterFile, Detection, Disk, Firmware, Fleet, GithubApp, Identity, Node, Partition, Profile,
+    Role, RoleDevices,
 };
 pub use images::{
     Base, ImagesFile, Isolation, Quadlet, QuadletMount, Registries, Runner, Runtime, Signing,
     Upstream, Variant,
 };
-pub use network::{Firewall, FirewallRule, Link, LinkAddresses, NetworkFile, Plane, Routing};
+pub use network::{
+    Addressing, Class, Discovery, Firewall, FirewallRule, Hosts, Link, NetworkFile, Routing,
+};
 pub use policy::{
     Alert, Auth, Drain, DrainBudget, Gc, Greenboot, Health, PolicyFile, Reclaim, Rollout, Tunnel,
 };
@@ -44,9 +47,9 @@ pub const GENERATED_DIR: &str = "generated";
 /// cross-checked.
 #[derive(Debug, Clone)]
 pub struct Cluster {
-    /// Nodes, roles, MACs, update positions, storage tiers.
+    /// The fleet's shape, the roles, and the hardware a conforming machine has.
     pub cluster: ClusterFile,
-    /// Planes, links, routes, firewall.
+    /// Interface classes, addressing arithmetic, routes, firewall.
     pub network: NetworkFile,
     /// Variants, base digest, runtime, packages, units, kargs.
     pub images: ImagesFile,
@@ -98,16 +101,80 @@ impl Cluster {
         Self::load(&repo_root().join("model"))
     }
 
+    /// Every ordinal slot the fleet has, in ascending order (§2.3, §4.1).
+    ///
+    /// **Derived, not parsed.** There is no `[[node]]` table to read. An
+    /// ordinal exists whether or not a machine is holding it, and everything
+    /// about the slot --- its name, its role, its rollout position, its
+    /// loopback --- is a function of the number. That is what lets the renderer
+    /// emit a complete firewall and a complete scrape list while nothing in the
+    /// tree says which chassis is which.
+    ///
+    /// Total by construction: [`Cluster::check`] validates the fleet size, the
+    /// role table and the addressing bases before anything renders, so the
+    /// derivation cannot fail on a model that passed.
+    pub fn nodes(&self) -> Vec<Node> {
+        self.cluster
+            .fleet
+            .ordinals()
+            .filter_map(|ordinal| self.node_at(ordinal))
+            .collect()
+    }
+
+    /// The slot at one ordinal, or `None` when the model does not admit it.
+    pub fn node_at(&self, ordinal: u32) -> Option<Node> {
+        let role = self.cluster.role_of_ordinal(ordinal)?;
+        let loopback = self.network.addressing.loopback_of(ordinal)?;
+        let fqdn = self
+            .cluster
+            .fleet
+            .name_of(ordinal, &self.cluster.domain);
+        // The short name is the fully-qualified one without the domain, so the
+        // two cannot disagree: `node2` is whatever `node2.devcluster` starts
+        // with, not a second template.
+        let name = fqdn
+            .strip_suffix(&format!(".{}", self.cluster.domain))
+            .unwrap_or(&fqdn)
+            .to_string();
+        Some(Node {
+            ordinal,
+            name,
+            fqdn,
+            role: role.id.clone(),
+            update_position: role.update_position,
+            loopback: loopback.to_string(),
+        })
+    }
+
+    /// The slot with a given short or fully-qualified name.
+    pub fn node(&self, name: &str) -> Option<Node> {
+        self.nodes()
+            .into_iter()
+            .find(|n| n.name == name || n.fqdn == name)
+    }
+
+    /// The slot holding a role, of which there is exactly one (§2.3).
+    pub fn node_with_role(&self, role: &str) -> Option<Node> {
+        self.nodes().into_iter().find(|n| n.role == role)
+    }
+
+    /// Slots in rollout order (§13.2).
+    pub fn in_update_order(&self) -> Vec<Node> {
+        let mut nodes = self.nodes();
+        nodes.sort_by_key(|n| n.update_position);
+        nodes
+    }
+
     /// Cross-check the model against itself.
     ///
     /// Every rule here is one a rendered artifact would otherwise encode
-    /// silently. A duplicate MAC renders two `.network` files that match the
-    /// same card; an update position that is not a permutation renders a
-    /// rollout that either never starts or starts twice. Catching those in the
-    /// model is what keeps the renderers total.
+    /// silently. An update position that is not a permutation renders a rollout
+    /// that either never starts or starts twice; an interface class nothing
+    /// recognises renders a node that configures no ports. Catching those in
+    /// the model is what keeps the renderers total.
     pub fn check(&self) -> Result<(), ClusterError> {
         self.check_spec()?;
-        self.check_nodes()?;
+        self.check_fleet()?;
         self.check_topology()?;
         self.check_firewall()?;
         self.check_variants()?;
@@ -133,61 +200,124 @@ impl Cluster {
         Ok(())
     }
 
-    /// Node identity: names, positions, loopbacks, MACs, profiles (§2, §3.1).
-    fn check_nodes(&self) -> Result<(), ClusterError> {
-        if self.cluster.node.is_empty() {
-            return Err(bad("model/cluster.toml declares no nodes"));
+    /// The fleet is a shape the derivation can work over (§2.3, §4.1).
+    ///
+    /// Every rule here fails a *derivation*, not a declaration. There are no
+    /// duplicate names to catch and no duplicate MACs, because nothing declares
+    /// either --- what can still go wrong is a role table that leaves an
+    /// ordinal without a role, or update positions that are not a permutation.
+    fn check_fleet(&self) -> Result<(), ClusterError> {
+        let fleet = &self.cluster.fleet;
+        if fleet.size == 0 {
+            return Err(bad("model/cluster.toml declares a fleet of no nodes"));
+        }
+        for token in ["{ordinal}", "{domain}"] {
+            if !fleet.name_template.contains(token) {
+                return Err(bad(format!(
+                    "fleet.name_template `{}` does not contain `{token}`. A template that \
+                     ignores the ordinal names every slot the same thing (§4.3)",
+                    fleet.name_template
+                )));
+            }
         }
 
-        let mut names = BTreeSet::new();
-        let mut loopbacks = BTreeSet::new();
-        let mut macs = BTreeSet::new();
-        let mut positions = Vec::new();
+        // Exactly one self-detected role, and it pins an ordinal. The registrar
+        // is the machine that does not have to ask, so it cannot be assigned --
+        // and two of them would be a fleet with two registrars and no tie-break
+        // between them (§2.3.1).
+        let detected: Vec<&Role> = self
+            .cluster
+            .role
+            .iter()
+            .filter(|r| r.is_self_detected())
+            .collect();
+        if detected.len() != 1 {
+            return Err(bad(format!(
+                "{} roles are self-detected. Exactly one is: the registrar is the machine \
+                 that works its role out from its own disks, and every other role is handed \
+                 out by it (§2.3.1)",
+                detected.len()
+            )));
+        }
+        if detected[0].ordinal.is_none() {
+            return Err(bad(format!(
+                "role `{}` is self-detected but pins no ordinal. The registrar cannot be \
+                 assigned one, so it must declare the one it takes (§2.3.2)",
+                detected[0].id
+            )));
+        }
+        if detected[0].assign_order.is_some() {
+            return Err(bad(format!(
+                "role `{}` is both self-detected and assigned. It is one or the other, and \
+                 a role that is both would be handed out to a machine that already had it \
+                 (§2.3)",
+                detected[0].id
+            )));
+        }
 
-        for node in &self.cluster.node {
-            if !names.insert(node.name.as_str()) {
-                return Err(bad(format!("{}: declared twice", node.name)));
+        let mut ids = BTreeSet::new();
+        let mut orders = Vec::new();
+        for role in &self.cluster.role {
+            if !ids.insert(role.id.as_str()) {
+                return Err(bad(format!("role `{}`: declared twice", role.id)));
             }
-            if !loopbacks.insert(node.loopback.as_str()) {
+            if !role.is_self_detected() && role.detect != "assigned" {
                 return Err(bad(format!(
-                    "{}: loopback {} is already taken. Every mesh service binds \
-                     its node's loopback, so a shared one is a silent collision (§4.1)",
-                    node.name, node.loopback
+                    "role `{}`: detect is `{}`, which is neither `bulk-disk` nor `assigned` \
+                     (§2.3)",
+                    role.id, role.detect
                 )));
             }
-            if node.loopback.parse::<std::net::Ipv4Addr>().is_err() {
-                return Err(bad(format!(
-                    "{}: loopback `{}` is not an address",
-                    node.name, node.loopback
-                )));
-            }
-            for (role, mac) in node.mac.roles() {
-                let normalised = mac.to_ascii_lowercase();
-                if !is_mac(&normalised) {
+            if let Some(order) = role.assign_order {
+                orders.push(order);
+                if role.ordinal.is_some() {
                     return Err(bad(format!(
-                        "{}.{role}: `{mac}` is not a MAC address",
-                        node.name
-                    )));
-                }
-                if !macs.insert(normalised) {
-                    // Two `.network` files matching the same card is not a
-                    // configuration error the node reports; it is one that
-                    // produces an interface with an address nobody expected.
-                    return Err(bad(format!(
-                        "{}.{role}: MAC {mac} is declared more than once in the fleet (§3.1)",
-                        node.name
+                        "role `{}` is assigned but also pins an ordinal. Which ordinal an \
+                         assigned role takes is the registrar's decision, and pinning one \
+                         would make the model disagree with it (§2.3.2)",
+                        role.id
                     )));
                 }
             }
-            if self
-                .cluster
-                .profile
-                .iter()
-                .all(|p| p.id != node.profile.as_str())
-            {
+        }
+
+        // Hand-out order is a permutation of 1..=k over the assigned roles. A
+        // gap or a repeat is a registrar with two roles to hand out at the same
+        // position and no way to choose (§2.3.2).
+        orders.sort_unstable();
+        let expected_orders: Vec<u32> = (1..=orders.len() as u32).collect();
+        if orders != expected_orders {
+            return Err(bad(format!(
+                "assign_order values are {orders:?}, which is not a permutation of \
+                 {expected_orders:?}. The registrar hands out one role per position (§2.3.2)"
+            )));
+        }
+
+        if self.cluster.role.len() as u32 != fleet.size {
+            return Err(bad(format!(
+                "{} roles for a fleet of {}. Every ordinal holds exactly one role, so a \
+                 slot with none would render a node nothing runs on (§2.3)",
+                self.cluster.role.len(),
+                fleet.size
+            )));
+        }
+
+        // The derivation is total over the fleet, and the addressing bases
+        // produce a distinct loopback per ordinal.
+        let mut loopbacks = BTreeSet::new();
+        let mut positions = Vec::new();
+        for ordinal in fleet.ordinals() {
+            let node = self.node_at(ordinal).ok_or_else(|| {
+                bad(format!(
+                    "ordinal {ordinal} derives no node. Either no role claims it or the \
+                     addressing base does not reach it (§4.1)"
+                ))
+            })?;
+            if !loopbacks.insert(node.loopback.clone()) {
                 return Err(bad(format!(
-                    "{}: names profile `{}`, which is not declared",
-                    node.name, node.profile
+                    "{}: loopback {} is already taken. Every mesh service binds its node's \
+                     loopback, so a shared one is a silent collision (§4.1)",
+                    node.name, node.loopback
                 )));
             }
             positions.push(node.update_position);
@@ -196,19 +326,42 @@ impl Cluster {
         // A permutation of 1..=n. Anything else is a rollout that either never
         // starts or has two nodes believing they are first (§13.2).
         positions.sort_unstable();
-        let expected: Vec<u32> = (1..=self.cluster.node.len() as u32).collect();
+        let expected: Vec<u32> = (1..=fleet.size).collect();
         if positions != expected {
             return Err(bad(format!(
                 "update positions are {positions:?}, which is not a permutation of {expected:?}. \
                  §13.2's predicate is true for exactly one node only when they are (§2.3)"
             )));
         }
+
+        // The threshold that decides which machine is the storage node must sit
+        // between the devices a conforming machine carries. One above every
+        // disk is true on no machine; one below the container-graph SSD is true
+        // on all three. Either way the registrar refuses and the fleet does not
+        // come up (§2.3.1, §21.11).
+        let threshold = self.cluster.detection.bulk_disk_min_gb;
+        let bulk: Vec<&Disk> = self
+            .cluster
+            .disk
+            .iter()
+            .filter(|d| d.purpose != "boot" && d.size_gb >= threshold)
+            .collect();
+        if bulk.len() != 1 {
+            return Err(bad(format!(
+                "detection.bulk_disk_min_gb is {threshold} GB, which {} of the declared \
+                 non-boot devices reach. The predicate must be true of exactly one device \
+                 kind, or it is true on every machine or on none (§2.3.1)",
+                bulk.len()
+            )));
+        }
+
         Ok(())
     }
 
-    /// The mesh is the shape the topology says it is (§1.1, §4.1).
+    /// The mesh is the shape the topology says it is, and the addressing
+    /// arithmetic covers it (§1.1, §4.1).
     fn check_topology(&self) -> Result<(), ClusterError> {
-        let n = self.cluster.node.len() as u32;
+        let n = self.cluster.fleet.size;
         if n > self.network.topology.max_nodes {
             return Err(bad(format!(
                 "{n} nodes, but topology `{}` admits {}. The direct mesh needs one 10 GbE \
@@ -218,96 +371,135 @@ impl Cluster {
             )));
         }
 
-        let mut prefixes = BTreeSet::new();
-        for link in &self.network.link {
-            if link.addresses().is_none() {
+        // A direct triangle needs one mesh port per peer, and the profile says
+        // how many the board has. This is the check that made §1.1's ceiling a
+        // consequence of the hardware rather than a number somebody wrote down.
+        if self.network.topology.kind == "direct-triangle" {
+            let needed = n.saturating_sub(1);
+            if self.cluster.profile.nic_10g < needed {
                 return Err(bad(format!(
-                    "link {}: `{}` is not an aligned /31. RFC 3021 point-to-point \
-                     addressing is what §4.1 declares (§4.1)",
-                    link.id, link.prefix
+                    "a fleet of {n} needs {needed} mesh ports per machine and the profile \
+                     declares {}. The direct mesh gives each node one port per peer (§1.1)",
+                    self.cluster.profile.nic_10g
                 )));
             }
-            if !prefixes.insert(link.prefix.as_str()) {
-                return Err(bad(format!("link {}: prefix declared twice", link.id)));
-            }
-            for end in [&link.a, &link.b] {
-                if self.cluster.node(end).is_none() {
-                    return Err(bad(format!(
-                        "link {}: names node `{end}`, which is not declared",
-                        link.id
-                    )));
-                }
-            }
-            if link.a == link.b {
+        }
+
+        let addressing = &self.network.addressing;
+        if addressing.link_prefix_len != 31 {
+            return Err(bad(format!(
+                "link_prefix_len is {}. §4.1 declares RFC 3021 point-to-point addressing, \
+                 whose whole property is that a /31 has exactly two hosts and no network \
+                 or broadcast address",
+                addressing.link_prefix_len
+            )));
+        }
+        if addressing.loopback_prefix_len != 32 {
+            return Err(bad(format!(
+                "loopback_prefix_len is {}, and a loopback is a host route (§4.1)",
+                addressing.loopback_prefix_len
+            )));
+        }
+
+        // Every pair derives a link, every link is an aligned /31, and no
+        // address appears on two of them. Unlike the declared table this
+        // replaced, a collision here is an arithmetic error rather than a typo
+        // -- but it would be just as silent on a node, so it is still checked.
+        let links = addressing.links(n);
+        let expected_links = (n * n.saturating_sub(1)) / 2;
+        if links.len() as u32 != expected_links {
+            return Err(bad(format!(
+                "the addressing derives {} links for a fleet of {n}, and a direct triangle \
+                 joins every pair exactly once, which is {expected_links} (§4.1)",
+                links.len()
+            )));
+        }
+        let mut seen = BTreeSet::new();
+        for link in &links {
+            if !u32::from(link.lower_address).is_multiple_of(2) {
                 return Err(bad(format!(
-                    "link {}: both ends are the same node",
-                    link.id
+                    "link {}: {} is not an aligned /31. An unaligned prefix is a typo in \
+                     the base, not a smaller subnet (§4.1)",
+                    link.id(),
+                    link.prefix()
                 )));
             }
-            for (node, interface) in [(&link.a, &link.a_interface), (&link.b, &link.b_interface)] {
-                let plane = self.network.plane_of(interface).ok_or_else(|| {
-                    bad(format!(
-                        "link {}: interface `{interface}` belongs to no declared plane",
-                        link.id
-                    ))
-                })?;
-                if plane.id != "mesh" {
+            for address in link.addresses() {
+                if !seen.insert(address) {
                     return Err(bad(format!(
-                        "link {}: `{interface}` is on plane `{}`, and a mesh link must be \
-                         on the mesh plane (§3.2)",
-                        link.id, plane.id
-                    )));
-                }
-                if self
-                    .cluster
-                    .node(node)
-                    .and_then(|nd| nd.mac.get(interface))
-                    .is_none()
-                {
-                    return Err(bad(format!(
-                        "link {}: {node} declares no MAC for `{interface}` (§3.1)",
-                        link.id
+                        "link {}: {address} is already on another link. The bases overlap \
+                         (§4.1)",
+                        link.id()
                     )));
                 }
             }
         }
-
-        // A direct triangle: every pair joined exactly once, and no node using
-        // one of its two mesh ports twice.
-        if self.network.topology.kind == "direct-triangle" {
-            for a in &self.cluster.node {
-                for b in &self.cluster.node {
-                    if a.name >= b.name {
-                        continue;
-                    }
-                    let joined = self
-                        .network
-                        .link
-                        .iter()
-                        .filter(|l| l.touches(&a.name) && l.touches(&b.name))
-                        .count();
-                    if joined != 1 {
-                        return Err(bad(format!(
-                            "{} and {} are joined by {joined} links; a direct triangle joins \
-                             every pair exactly once (§4.1)",
-                            a.name, b.name
-                        )));
-                    }
-                }
-                let mut used = BTreeSet::new();
-                for link in self.network.links_of(&a.name) {
-                    let interface = link
-                        .interface_of(&a.name)
-                        .expect("a link touching a node names its interface");
-                    if !used.insert(interface.to_string()) {
-                        return Err(bad(format!(
-                            "{}: interface `{interface}` carries more than one link. Each \
-                             node has two 10 GbE ports and a triangle needs both (§1.1)",
-                            a.name
-                        )));
-                    }
-                }
+        // The link and loopback ranges must not overlap either: a loopback that
+        // collided with a link address would make a route to a peer resolve to
+        // a cable rather than to the node.
+        for ordinal in self.cluster.fleet.ordinals() {
+            let loopback = addressing.loopback_of(ordinal).ok_or_else(|| {
+                bad(format!("ordinal {ordinal}: the loopback base does not reach it"))
+            })?;
+            if seen.contains(&loopback) {
+                return Err(bad(format!(
+                    "ordinal {ordinal}: loopback {loopback} is also a link address. The two \
+                     bases overlap, and a route to a peer would resolve to a cable (§4.1)"
+                )));
             }
+        }
+
+        // The classes a machine is sorted into. Both must exist, the mesh class
+        // must ask for a port per peer, and the speeds must be ordered -- a
+        // mesh threshold at or below the LAN one puts every port in one class.
+        let mesh = self.network.mesh_class().ok_or_else(|| {
+            bad("no `mesh` interface class. §3.1 classifies ports by speed, and the mesh \
+                 class is what recognises a 10GBase-T port")
+        })?;
+        let lan = self.network.lan_class().ok_or_else(|| {
+            bad("no `lan` interface class (§3.1)")
+        })?;
+        if mesh.min_speed_mbps <= lan.min_speed_mbps {
+            return Err(bad(format!(
+                "the mesh class starts at {} Mbps and the LAN class at {}. The mesh \
+                 threshold must be the higher one, or every port classifies as mesh (§3.1)",
+                mesh.min_speed_mbps, lan.min_speed_mbps
+            )));
+        }
+        if mesh.count != n.saturating_sub(1) {
+            return Err(bad(format!(
+                "the mesh class expects {} ports and a fleet of {n} gives each machine {} \
+                 peers. A machine that came up with fewer would join with no redundancy and \
+                 nothing would say so (§3.1)",
+                mesh.count,
+                n.saturating_sub(1)
+            )));
+        }
+        if mesh.count > self.cluster.profile.nic_10g {
+            return Err(bad(format!(
+                "the mesh class expects {} ports and the profile declares {} (§2.1, §3.1)",
+                mesh.count, self.cluster.profile.nic_10g
+            )));
+        }
+        if lan.count > self.cluster.profile.nic_1g {
+            return Err(bad(format!(
+                "the LAN class expects {} ports and the profile declares {} (§2.1, §3.1)",
+                lan.count, self.cluster.profile.nic_1g
+            )));
+        }
+        if lan.addressing != "dhcp" {
+            return Err(bad(format!(
+                "the LAN class addresses by `{}`. §3.2 makes it DHCP: there is no \
+                 per-machine fact left to make it static from",
+                lan.addressing
+            )));
+        }
+        if mesh.addressing != "derived" {
+            return Err(bad(format!(
+                "the mesh class addresses by `{}`, and §4.1 derives mesh addresses from \
+                 ordinals",
+                mesh.addressing
+            )));
         }
 
         if self.network.routing.direct_metric >= self.network.routing.transit_metric {
@@ -322,9 +514,39 @@ impl Cluster {
                 "ip_forward is false, so a transit route has nothing to transit (§4.2)",
             ));
         }
+
+        // Discovery is what turns a cable into a peer, and a timeout shorter
+        // than a cold boot would report a link unpeered because the machine on
+        // the other end was still starting (§3.3, §12.1).
+        let discovery = &self.network.discovery;
+        if discovery.group.parse::<std::net::Ipv6Addr>().is_err() {
+            return Err(bad(format!(
+                "discovery.group `{}` is not an IPv6 address (§3.3)",
+                discovery.group
+            )));
+        }
+        if !discovery.group.starts_with("ff02:") {
+            return Err(bad(format!(
+                "discovery.group `{}` is not link-local scope. §3.3 announces on one \
+                 interface, and a wider scope would leak the announcement past the cable \
+                 it is asking about",
+                discovery.group
+            )));
+        }
+        if discovery.interval_ms == 0 {
+            return Err(bad(
+                "discovery.interval_ms is zero, which is not a fast retry but a spin (§3.3)",
+            ));
+        }
+        if u64::from(discovery.timeout_s) * 1000 <= u64::from(discovery.interval_ms) {
+            return Err(bad(format!(
+                "discovery times out after {}s having announced every {}ms, so it gives up \
+                 before it has retried (§3.3)",
+                discovery.timeout_s, discovery.interval_ms
+            )));
+        }
         Ok(())
     }
-
     /// The firewall drops by default and every accept is declared (§4.4).
     fn check_firewall(&self) -> Result<(), ClusterError> {
         if self.network.firewall.input_policy != "drop" {
@@ -335,20 +557,25 @@ impl Cluster {
             )));
         }
         for rule in &self.network.firewall.rule {
-            // `tailscale` and `lo` are pseudo-planes: one is an overlay
-            // interface with no declared MAC, the other is not a plane at all.
+            // `tailscale` and `lo` are pseudo-classes: one is an overlay
+            // interface no classifier sorts, the other is not an interface at
+            // all.
             let known = ["tailscale", "lo"].contains(&rule.plane.as_str())
-                || self.network.plane.iter().any(|p| p.id == rule.plane);
+                || self.network.class.iter().any(|c| c.id == rule.plane);
             if !known {
                 return Err(bad(format!(
-                    "firewall rule on plane `{}`, which is not declared",
+                    "firewall rule on `{}`, which is not a declared interface class (§3.1)",
                     rule.plane
                 )));
             }
-            for node in &rule.nodes {
-                if self.cluster.node(node).is_none() {
+            // Roles rather than nodes: one image means one ruleset, so a rule
+            // true of one role only is rendered into its own include (§8.4). A
+            // rule naming a role that does not exist would render an include
+            // nothing ever links into place.
+            for role in &rule.roles {
+                if self.cluster.role(role).is_none() {
                     return Err(bad(format!(
-                        "firewall rule names node `{node}`, which is not declared"
+                        "firewall rule names role `{role}`, which is not declared (§2.3)"
                     )));
                 }
             }
@@ -407,28 +634,30 @@ impl Cluster {
             )));
         }
 
-        for node in &self.cluster.node {
-            if self.images.variant_for(&node.name).is_none() {
+        for role in &self.cluster.role {
+            if self.images.variant_for(&role.id).is_none() {
                 return Err(bad(format!(
-                    "{}: no variant in model/images.toml builds an image for it",
-                    node.name
+                    "role `{}`: no variant in model/images.toml says what it adds to the \
+                     image. One image serves all three roles, and a role that contributes \
+                     nothing is a role no machine can tell it is holding (§8.4)",
+                    role.id
                 )));
             }
         }
 
         let mut isolated = Vec::new();
         for variant in &self.images.variant {
-            if self.cluster.node(&variant.node).is_none() {
+            if self.cluster.role(&variant.role).is_none() {
                 return Err(bad(format!(
-                    "variant {}: names node `{}`, which is not declared. R1 makes a \
+                    "variant {}: names role `{}`, which is not declared. R1 makes a \
                      dangling reference a build failure rather than a stale file (§17.2)",
-                    variant.id, variant.node
+                    variant.id, variant.role
                 )));
             }
             if self.images.runtime_of(variant).is_none() {
                 return Err(bad(format!(
-                    "variant {}: runtime `{}` is not declared (§8.2)",
-                    variant.id, variant.runtime
+                    "variant {}: the default runtime `{}` is not declared (§8.2)",
+                    variant.id, self.images.default_runtime
                 )));
             }
             for quadlet in variant.all_quadlets(&self.images.base) {
@@ -467,12 +696,32 @@ impl Cluster {
             }
         }
 
-        // Isolation is `n3`'s alone. A second isolated variant would mean a node
-        // that both measures and serves, which §2.3 exists to prevent.
+        // Isolation is the testbed's alone. A second isolated variant would mean
+        // a node that both measures and serves, which §2.3 exists to prevent.
         if isolated.len() > 1 {
             return Err(bad(format!(
                 "variants {isolated:?} all declare CPU isolation; measurement is one node's \
                  job (§2.3)"
+            )));
+        }
+        // Isolation is applied after the role is known, not shipped in the
+        // image: one image is installed on all three machines and isolating two
+        // cores on the storage node would cost half its CPU to no purpose. A
+        // variant that put its isolation kargs in the base would do exactly
+        // that, so the base carries none of them (§8.5).
+        if let Some(karg) = self
+            .images
+            .base
+            .content
+            .kargs
+            .iter()
+            .find(|k| k.starts_with("isolcpus=") || k.starts_with("nohz_full=") || *k == "nosmt")
+        {
+            return Err(bad(format!(
+                "the base carries kernel argument `{karg}`. One image boots all three roles, \
+                 so an isolation karg in the base isolates the storage node's cores too. \
+                 §8.5 applies these after the role is known, with \
+                 `bootc loader-entries set-options-for-source`"
             )));
         }
         Ok(())
@@ -481,32 +730,35 @@ impl Cluster {
     /// Drain, reclamation and health thresholds are internally coherent
     /// (§14, §15.3, §10.1).
     fn check_policy(&self) -> Result<(), ClusterError> {
+        // Drain names *roles*, not machines. Which chassis receives a migrated
+        // workload is not a fact this repository holds any more; which role
+        // does is (§2.3, §14.1).
         let drain = &self.policy.drain;
-        if self.cluster.node(&drain.migration_target).is_none() {
+        if self.cluster.role(&drain.migration_target).is_none() {
             return Err(bad(format!(
-                "migration_target `{}` is not a declared node",
+                "migration_target `{}` is not a declared role (§2.3)",
                 drain.migration_target
             )));
         }
-        for node in &drain.never_receives {
-            if self.cluster.node(node).is_none() {
+        for role in &drain.never_receives {
+            if self.cluster.role(role).is_none() {
                 return Err(bad(format!(
-                    "never_receives names `{node}`, which is not a declared node"
+                    "never_receives names `{role}`, which is not a declared role (§2.3)"
                 )));
             }
-            if node == &drain.migration_target {
+            if role == &drain.migration_target {
                 return Err(bad(format!(
-                    "{node} is both the migration target and a node that never receives \
+                    "`{role}` is both the migration target and a role that never receives \
                      work (§2.3, §14.1)"
                 )));
             }
-            // A node that must receive nothing must also mount nothing: NFS
+            // A role that must receive nothing must also mount nothing: NFS
             // client activity, RPC timers and interrupt handling inject jitter
             // into exactly the quantity being measured (§2.3).
-            if let Some(variant) = self.images.variant_for(node) {
+            if let Some(variant) = self.images.variant_for(role) {
                 if let Some(mount) = variant.mount.first() {
                     return Err(bad(format!(
-                        "{node} receives no migrated workload, but its variant mounts {} \
+                        "`{role}` receives no migrated workload, but its variant mounts {} \
                          at {}. A network filesystem on a measurement node is jitter in \
                          the quantity being measured (§2.3, §8.4)",
                         mount.what, mount.where_
@@ -581,11 +833,9 @@ impl Cluster {
         // the probe fail when the mesh is not carrying jumbo frames (§10.1).
         let mesh_mtu = self
             .network
-            .plane
-            .iter()
-            .find(|p| p.id == "mesh")
-            .map(|p| p.mtu)
-            .ok_or_else(|| bad("no mesh plane declared"))?;
+            .mesh_class()
+            .map(|c| c.mtu)
+            .ok_or_else(|| bad("no mesh interface class declared (§3.1)"))?;
         let expected = mesh_mtu - 28;
         if self.policy.health.mesh_mtu_probe_bytes != expected {
             return Err(bad(format!(
@@ -605,24 +855,23 @@ impl Cluster {
         Ok(())
     }
 
-    /// Every peer of `node`, in declaration order.
-    pub fn peers_of<'a>(&'a self, node: &str) -> Vec<&'a Node> {
-        self.cluster
-            .node
-            .iter()
-            .filter(|n| n.name != node)
-            .collect()
+    /// Every peer of `node`, in ordinal order.
+    pub fn peers_of(&self, node: &str) -> Vec<Node> {
+        self.nodes().into_iter().filter(|n| n.name != node).collect()
     }
 }
 
 impl Cluster {
-    /// Substitute `{<node>.loopback}` with the address the model declares.
+    /// Substitute `{<node>.loopback}` with the address the ordinal derives.
     ///
     /// Addresses appear in `model/images.toml` --- a Quadlet's published port, an
     /// NFS export --- and writing them there literally would give every loopback
-    /// two sources: `model/cluster.toml` and whatever was typed next to the
+    /// two sources: the addressing arithmetic and whatever was typed next to the
     /// port. A placeholder that fails to resolve is a model error rather than a
     /// string that renders unchanged into a unit file nobody reads closely.
+    ///
+    /// The name is an ordinal slot (`node1`), not a machine. Which chassis is
+    /// holding it is not a fact this substitution has, or needs.
     pub fn substitute(&self, text: &str) -> Result<String, ClusterError> {
         let mut out = String::with_capacity(text.len());
         let mut rest = text;
@@ -639,11 +888,10 @@ impl Cluster {
                      Only `<node>.loopback` is substituted."
                 ))
             })?;
-            let address = self
-                .cluster
+            let slot = self
                 .node(node)
-                .ok_or_else(|| bad(format!("`{text}`: `{node}` is not a declared node")))?;
-            out.push_str(&address.loopback);
+                .ok_or_else(|| bad(format!("`{text}`: `{node}` is not an ordinal in the fleet")))?;
+            out.push_str(&slot.loopback);
             rest = &after[close + 1..];
         }
         out.push_str(rest);
@@ -688,15 +936,6 @@ impl std::str::FromStr for IpPrefix {
         }
         Ok(Self)
     }
-}
-
-/// Six colon-separated hex octets, and nothing else.
-fn is_mac(s: &str) -> bool {
-    let parts: Vec<&str> = s.split(':').collect();
-    parts.len() == 6
-        && parts
-            .iter()
-            .all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 fn read<T: serde::de::DeserializeOwned>(dir: &Path, name: &str) -> Result<T, ClusterError> {

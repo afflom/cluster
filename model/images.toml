@@ -68,7 +68,7 @@ transparency_log = "https://rekor.sigstore.dev"
 #
 # The host is derived from the node that runs the registry, never written here:
 # duplicating a loopback is exactly the second source R1 forbids. The same rule
-# governs every address below, which is why they are written `{n1.loopback}` and
+# governs every address below, which is why they are written `{node1.loopback}` and
 # substituted at render time.
 # ---------------------------------------------------------------------------
 
@@ -161,9 +161,8 @@ relabel = "z"
 # ---------------------------------------------------------------------------
 
 [[variant]]
-id = "n1"
-node = "n1"
-runtime = "podman-compat"
+id = "storage"
+role = "storage"
 packages = [
   "lvm2",
   "device-mapper-persistent-data",
@@ -204,7 +203,7 @@ compression = "bz2"
 name = "zot"
 kind = "container"
 image = "ghcr.io/project-zot/zot-linux-amd64:v2.1.2"
-publish = ["{n1.loopback}:5000:5000"]
+publish = ["{node1.loopback}:5000:5000"]
 description = "registry; mirrors ghcr.io/afflom/cluster/* and pull-through caches docker.io and ghcr.io (§5.4)"
 
 [[variant.quadlet.mount]]
@@ -223,7 +222,7 @@ relabel = "z"
 name = "garage"
 kind = "container"
 image = "docker.io/dxflrs/garage:v1.0.1"
-publish = ["{n1.loopback}:3900:3900", "{n1.loopback}:3903:3903"]
+publish = ["{node1.loopback}:3900:3900", "{node1.loopback}:3903:3903"]
 description = "S3-compatible object store; the sccache backend (§5.4)"
 
 [[variant.quadlet.mount]]
@@ -242,7 +241,7 @@ relabel = "Z"
 name = "prometheus"
 kind = "container"
 image = "quay.io/prometheus/prometheus:v2.54.1"
-publish = ["{n1.loopback}:9090:9090"]
+publish = ["{node1.loopback}:9090:9090"]
 description = "scrapes the mesh; retention accepted as lossy (§5.6, §18)"
 # Retention is command-line only, so it is passed rather than written into
 # prometheus.yml. The value comes from model/policy.toml: one number, one source.
@@ -268,7 +267,7 @@ relabel = "z"
 name = "grafana"
 kind = "container"
 image = "docker.io/grafana/grafana:11.2.0"
-publish = ["{n1.loopback}:3000:3000"]
+publish = ["{node1.loopback}:3000:3000"]
 description = "dashboards (§18)"
 
 [[variant.quadlet.mount]]
@@ -287,7 +286,7 @@ relabel = "z"
 name = "alertmanager"
 kind = "container"
 image = "quay.io/prometheus/alertmanager:v0.27.0"
-publish = ["{n1.loopback}:9093:9093"]
+publish = ["{node1.loopback}:9093:9093"]
 description = "delivers to a Tailscale-reachable webhook; no paging integration (§18)"
 
 [[variant.quadlet.mount]]
@@ -320,9 +319,8 @@ ephemeral = true
 # ---------------------------------------------------------------------------
 
 [[variant]]
-id = "n2"
-node = "n2"
-runtime = "podman-compat"
+id = "compute"
+role = "compute"
 packages = ["nfs-utils", "nodejs", "npm", "git", "rsync", "openssh-clients"]
 
 # Every session this node starts gets the tunnel Feature (§11.1). It is added
@@ -339,7 +337,7 @@ kargs = []
 # NFS carries data only. Workspaces are on local disk because `overlay2` and
 # podman's `overlay` driver do not function on NFS (§11.2).
 [[variant.mount]]
-what = "{n1.loopback}:/export/devcontainers"
+what = "{node1.loopback}:/export/devcontainers"
 where = "/var/lib/devcontainer-home"
 type = "nfs4"
 options = "hard,sec=sys,_netdev"
@@ -353,9 +351,8 @@ options = "hard,sec=sys,_netdev"
 # ---------------------------------------------------------------------------
 
 [[variant]]
-id = "n3"
-node = "n3"
-runtime = "podman-compat"
+id = "testbed"
+role = "testbed"
 packages = ["git", "rsync"]
 services = []
 kargs = [

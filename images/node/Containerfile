@@ -1,0 +1,189 @@
+# The one image (SPEC.md §8.4).
+#
+# It is installed unmodified on all three machines. What a machine does with it
+# is decided at boot by the role it discovers from its own hardware and from the
+# registrar (§2.3), not by which image somebody chose to install.
+#
+# There were three of these, differing only in which units they enabled. That
+# was three artifacts to build, sign, promote, scan and roll back for a
+# difference a `ConditionPathExists=` expresses in one line --- and it made
+# installation an act of choosing, when the thing being chosen is exactly what
+# the machine can work out for itself.
+#
+# So this carries the union of what the three roles need. Every machine has
+# QEMU and lvm2 whether or not it runs them; §21.14 records that trade rather
+# than pretending it is free.
+#
+# Pinned by digest, never by the floating tag. A repository this careful about
+# digest-pinning downstream cannot float its upstream; a scheduled workflow opens
+# a PR bumping it weekly and the bump passes the full gate like any other change.
+#
+# The digest below is the one in model/images.toml. It is written here rather
+# than substituted at build time because a Containerfile is the artifact a
+# reader checks, and `--build-arg` would put the pin somewhere they would have to
+# go looking for it. `CI-01` asserts the two agree.
+FROM quay.io/centos-bootc/centos-bootc@sha256:2b7e3b1abf8db094d1efb083721dc0f72e6feeef2355fc16ea010d0266b2bb95
+
+# CentOS Stream 10 over Fedora bootc for kernel stability: a measurement
+# environment that moves underneath a longitudinal series silently invalidates
+# comparisons across it.
+
+RUN dnf -y install \
+      openssh-server chrony nftables greenboot greenboot-default-health-checks \
+      container-selinux policycoreutils policycoreutils-python-utils \
+      jq iproute ethtool util-linux \
+ && dnf clean all
+
+# Tailscale is not in the EL10 repositories; the vendor repository is the one
+# upstream that ships it, and it is added deliberately rather than vendored.
+RUN dnf -y config-manager --add-repo https://pkgs.tailscale.com/stable/centos/10/tailscale.repo \
+ && dnf -y install tailscale \
+ && dnf clean all
+
+# ---------------------------------------------------------------------------
+# What each role needs, all of it, on every machine (§8.4).
+# ---------------------------------------------------------------------------
+
+# storage: the registry host, the object store, NFS, and the T2 QEMU host.
+RUN dnf -y install \
+      lvm2 device-mapper-persistent-data nfs-utils \
+      qemu-kvm libvirt-daemon-kvm edk2-ovmf smartmontools \
+ && dnf clean all
+
+# compute: the devcontainer toolchain.
+RUN dnf -y install nodejs npm git rsync openssh-clients && dnf clean all
+RUN npm install -g @devcontainers/cli
+
+# The container runtime. One image means one runtime: it was a per-variant
+# declaration when there were three images, and an image that installed two
+# would be making §8.2's choice twice and shipping both answers.
+RUN dnf -y install podman podman-docker && dnf clean all
+ENV DOCKER_HOST=unix:///run/podman/podman.sock
+
+# restic is not packaged for EL10 --- checked against this base image, not
+# assumed --- and §15.3 names it as the snapshot tool. So it is fetched from its
+# upstream release, pinned by version and verified by digest, which is the same
+# standard `cargo deny` holds everything arriving through cargo to (R6).
+#
+# The version and digest are in model/images.toml; CI-06 asserts this matches.
+RUN curl --silent --show-error --fail --location \
+      "https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_amd64.bz2" \
+      --output /tmp/restic.bz2 \
+ && echo "f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c  /tmp/restic.bz2" \
+      | sha256sum --check --strict \
+ && bunzip2 -c /tmp/restic.bz2 > /usr/bin/restic \
+ && chmod 0755 /usr/bin/restic \
+ && rm -f /tmp/restic.bz2 \
+ && restic version
+
+# ---------------------------------------------------------------------------
+# The binaries this repository builds (§10.1, §13, §16.1, §15.1, §2.3).
+# ---------------------------------------------------------------------------
+
+COPY cluster-health cluster-updater cluster-ctl devcontainer-agent cluster-init /usr/bin/
+RUN chmod 0755 /usr/bin/cluster-health /usr/bin/cluster-updater \
+      /usr/bin/cluster-ctl /usr/bin/devcontainer-agent /usr/bin/cluster-init
+
+# ---------------------------------------------------------------------------
+# The rendered tree. R1 over infrastructure: these files are diff-gated against
+# model/ by `cargo xtask check-render`, so a hand-edit is a build failure rather
+# than a surprise on a node (§7.2).
+#
+# One tree, not one per node. Every file in it is byte-identical on all three
+# machines; the handful that genuinely differ --- the `.network` files, the role
+# marker, the node environment --- are written at boot by cluster-init, because
+# each of them needs an ordinal this image does not have (§3.3, §4.1).
+# ---------------------------------------------------------------------------
+
+COPY generated/node/sysctl.d/ /usr/lib/sysctl.d/
+COPY generated/node/nftables.conf /usr/lib/cluster/nftables.conf
+COPY generated/node/hosts /usr/lib/cluster/hosts
+COPY generated/node/kargs.d/ /usr/lib/bootc/kargs.d/
+COPY generated/node/systemd/ /usr/lib/systemd/system/
+COPY generated/node/greenboot/ /usr/lib/greenboot/check/required.d/
+RUN chmod 0755 /usr/lib/greenboot/check/required.d/*.sh
+
+# What cluster-init reads: the thresholds that sort a port into a class, the
+# addressing arithmetic, the route metrics, the discovery parameters, the role
+# table, and the per-role firewall and kernel-argument sets it selects from
+# (§3.1, §4.1, §4.4, §8.5).
+COPY generated/node/init.conf /usr/lib/cluster/init.conf
+COPY generated/node/nftables-role-storage.conf /usr/lib/cluster/nftables-role-storage.conf
+COPY generated/node/nftables-role-compute.conf /usr/lib/cluster/nftables-role-compute.conf
+COPY generated/node/nftables-role-testbed.conf /usr/lib/cluster/nftables-role-testbed.conf
+COPY generated/node/role-kargs-storage.conf /usr/lib/cluster/role-kargs-storage.conf
+COPY generated/node/role-kargs-compute.conf /usr/lib/cluster/role-kargs-compute.conf
+COPY generated/node/role-kargs-testbed.conf /usr/lib/cluster/role-kargs-testbed.conf
+
+# What this node will stage, and where it pulls from (§12.3, §14.2). The policy
+# is the only thing between an unattended node and an arbitrary image, so it
+# ships in the image rather than being written onto a node afterwards.
+COPY generated/node/containers/ /etc/containers/
+COPY generated/node/journald.conf.d/ /usr/lib/systemd/journald.conf.d/
+
+# Host policy the model declares: key-only SSH, enforcing SELinux, and the
+# greenboot deadline and attempt count. Rendered rather than written here,
+# because a build that declared them too would give one decision two sources
+# (§8.1, §8.3, §13.3).
+COPY generated/node/sshd_config.d/ /etc/ssh/sshd_config.d/
+COPY generated/node/selinux/config /etc/selinux/config
+COPY generated/node/greenboot.conf /etc/greenboot/greenboot.conf
+
+# The hosts file and the packet filter are read from where they were shipped.
+#
+# /etc/hosts cannot be written by a container build: a RUN finds the path
+# bind-mounted and busy, and a COPY to it is *silently dropped*, producing an
+# image that builds clean and has no hosts file. Both were observed before this
+# comment existed. So `cluster-hosts.service` places it at boot, and a drop-in
+# points `nftables.service` at the rendered ruleset in /usr rather than copying
+# it into /etc (§4.3, §4.4).
+
+# Recording an attachment on every SSH connection is what keeps a session
+# somebody is using from looking idle to §15.3's thresholds.
+COPY generated/node/sshrc /etc/ssh/sshrc
+RUN chmod 0644 /etc/ssh/sshrc
+
+# Quadlets ship inside the image under /usr/share/containers/systemd/ and
+# materialize as units at boot --- the bootc grain exactly (§8.2). Every role's
+# ship; each one that belongs to a role carries a ConditionPathExists= naming
+# that role's marker, and systemd skips rather than fails a unit whose condition
+# is unmet.
+COPY generated/node/containers-systemd/ /usr/share/containers/systemd/
+
+# Every one of these is mounted read-only by a Quadlet. A container that mounts
+# an empty directory starts and stays active, which §10.1's fifth check cannot
+# tell from working --- so the configuration ships with the image (§5.4, §18).
+COPY generated/node/zot/ /etc/zot/
+COPY generated/node/prometheus/ /etc/prometheus/
+COPY generated/node/alertmanager/ /etc/alertmanager/
+COPY generated/node/garage/ /etc/garage/
+COPY generated/node/grafana/provisioning/ /etc/grafana/provisioning/
+COPY generated/node/exports /etc/exports
+
+COPY generated/node/libexec/ /usr/libexec/cluster/
+RUN chmod 0755 /usr/libexec/cluster/*
+
+# SELinux policy is compiled at build time and shipped, never compiled at runtime
+# on a read-only root (§8.3).
+COPY selinux/cluster.te /usr/share/selinux/cluster.te
+RUN checkmodule -M -m -o /tmp/cluster.mod /usr/share/selinux/cluster.te \
+ && semodule_package -o /usr/share/selinux/cluster.pp -m /tmp/cluster.mod \
+ && rm -f /tmp/cluster.mod
+
+# Units enabled on every machine. The role-specific ones are enabled here too
+# and gated by their condition: enabling a unit and having it skip is what one
+# image for three roles means, and it is why `cluster-health`'s "no failed
+# units" check stays honest on a machine deliberately running a third of them.
+RUN systemctl enable \
+      cluster-init.service \
+      nftables.service cluster-hosts.service \
+      cluster-health.service cluster-updater.timer cluster-gc.timer \
+      podman.socket \
+      nfs-server.service libvirtd.service lvm2-monitor.service \
+      cluster-reclaim.timer tailscale-serve.service cluster-ctl.service \
+      devcontainer-agent.service cluster-isolation.service \
+      remote-fs.target var-lib-devcontainer\\x2dhome.mount
+
+# `bootc container lint` is T0's first gate: it catches an image that is not a
+# valid bootc host before anything tries to boot one.
+RUN bootc container lint
