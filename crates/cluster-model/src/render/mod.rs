@@ -66,7 +66,15 @@ pub enum Syntax {
     /// An interpreted script: the shebang must stay on line one, so the header
     /// follows it.
     Script,
-    /// JSON, which has no comments at all. The provenance becomes two fields.
+    /// JSON, which carries no provenance at all.
+    ///
+    /// Not because JSON has no comments --- fields would have served --- but
+    /// because the formats this repository renders JSON *for* validate strictly.
+    /// `containers-policy.json` rejects an unknown key outright, and
+    /// `bootc install` reports that only at deployment. A file whose format
+    /// refuses provenance does not get provenance; it is still diff-gated, and
+    /// the claims that assert over it are in the register where `check-render`
+    /// reads them.
     Json,
 }
 
@@ -112,18 +120,14 @@ impl Rendered {
                 out.push_str(rest);
                 out
             }
+            // Nothing added. An earlier version injected `_generated` and
+            // `_assertedBy` fields, and `bootc install` refused the signature
+            // policy with `Unknown key "_generated"` --- the schema validates
+            // strictly, and a comment would have been rejected for the same
+            // reason a field was.
             Syntax::Json => {
-                // JSON carries no comments, so the provenance becomes two
-                // fields. `_` prefixed because every consumer of these documents
-                // ignores unknown keys, and a reader looking for where the file
-                // came from finds it in the file rather than in a commit.
-                let body = self.body.trim_start();
-                let inner = body.strip_prefix('{').unwrap_or(body);
-                format!(
-                    "{{\n  \"_generated\": \"{GENERATED_MARKER} by `just render` from \
-                     model/. Do not edit; R1 makes the model the single source.\",\n  \
-                     \"_assertedBy\": \"{ASSERTED_BY} {ids}\",{inner}"
-                )
+                let _ = ids;
+                self.body.trim_start().to_string()
             }
         }
     }

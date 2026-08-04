@@ -239,6 +239,45 @@ fn the_signature_policy_binds_the_promote_workflow_cl_01() {
         );
         assert!(policy.contains(&identity), "{}: {identity}", node.name);
 
+        // Only the keys `containers-policy.json` defines. It validates strictly
+        // and refuses anything else --- and reports it at `bootc install`, so a
+        // stray field is a node that will not deploy rather than a warning.
+        let document: serde_json::Value =
+            serde_json::from_str(&policy).expect("the policy is valid JSON");
+        let requirement =
+            &document["transports"]["docker"][format!("ghcr.io/{}", signing.repository)][0];
+        for key in requirement
+            .as_object()
+            .expect("a requirement is an object")
+            .keys()
+        {
+            assert!(
+                [
+                    "type",
+                    "keyType",
+                    "keyPath",
+                    "keyData",
+                    "signedIdentity",
+                    "fulcio",
+                    "rekorPublicKeyPath",
+                    "rekorPublicKeyData",
+                ]
+                .contains(&key.as_str()),
+                "{}: `{key}` is not a containers-policy key; a strict validator \
+                 refuses the whole policy and says so only at install",
+                node.name
+            );
+        }
+
+        // The transparency log is declared, and it belongs where signatures are
+        // made rather than where they are verified: the policy format has no
+        // field for a URL, and putting one there made the image undeployable.
+        assert!(
+            !policy.contains(&signing.transparency_log),
+            "{}: the log URL has no place in the policy schema",
+            node.name
+        );
+
         // A policy naming only the repository would admit anything any workflow
         // in it ever signed, so the repository-only form must not be what was
         // rendered as the subject.
@@ -380,6 +419,13 @@ fn the_promoted_digest_is_the_validated_one_cl_03() {
 
     // Keyless: no long-lived key to custody (§12.3).
     assert!(promote.does("id-token: write"));
+
+    // The transparency log the model declares is the one signing records to.
+    let c = model();
+    assert!(
+        promote.does(&c.images.signing.transparency_log),
+        "promotion must record to the declared transparency log (§12.3)"
+    );
 }
 
 /// `CD-12`: nothing dangles and nothing rendered is inert.

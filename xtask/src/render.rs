@@ -114,7 +114,14 @@ pub fn check_render(root: &Path, write: bool) -> Result<(), Fail> {
     let mut asserted: BTreeSet<&str> = BTreeSet::new();
     for file in &files {
         let contents = file.contents();
-        if !contents.contains(GENERATED_MARKER) {
+        // A strictly-validated format carries no provenance: `policy.json`
+        // rejects an unknown key, and `bootc install` says so only at
+        // deployment. Those files are still rendered, still diff-gated, and
+        // still covered by the claims below --- what they lack is a line inside
+        // the bytes, and demanding one made the image unbootable.
+        let carries_provenance =
+            cluster_model::render::Syntax::of(&file.body) != cluster_model::render::Syntax::Json;
+        if carries_provenance && !contents.contains(GENERATED_MARKER) {
             gaps.push(format!("{}: no `{GENERATED_MARKER}` marker", file.path));
         }
         if file.ids.is_empty() {
@@ -144,7 +151,7 @@ pub fn check_render(root: &Path, write: bool) -> Result<(), Fail> {
                 file.path
             ));
         }
-        if !contents.contains(ASSERTED_BY) {
+        if carries_provenance && !contents.contains(ASSERTED_BY) {
             gaps.push(format!("{}: header names no asserting IDs", file.path));
         }
     }

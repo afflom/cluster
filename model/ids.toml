@@ -174,8 +174,8 @@ suite = "definition"
 tier = "T0"
 statement = """
 The committed generated tree equals what the model renders, contains no file the
-model does not render, and every file in it names a registered definition claim
-in its header.
+model does not render, and every file whose format admits a comment names a
+registered definition claim in its header.
 """
 
 [[id]]
@@ -240,9 +240,10 @@ level = "build"
 suite = "definition"
 tier = "T0"
 statement = """
-Every rendered artifact is valid in its own syntax: a JSON document parses, an
-interpreted script carries its interpreter on the first line, and the generated
-provenance is present in a form that file's syntax admits.
+Every rendered artifact is valid in its own syntax: a JSON document parses and
+carries only the keys its schema defines, an interpreted script carries its
+interpreter on the first line, and every other file carries the generated
+provenance as a comment.
 """
 
 [[id]]

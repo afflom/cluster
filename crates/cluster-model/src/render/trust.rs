@@ -27,16 +27,12 @@ fn policy(c: &Cluster, node: &Node) -> Rendered {
     let repository = format!("{}/{}", "ghcr.io", s.repository);
 
     let mut body = String::new();
-    // No `#` preamble: this is JSON, which has none. The reasoning lives in this
-    // function's doc comment and, for a reader holding only the file, in the
-    // `_comment` field below.
+    // Nothing but the schema. `containers-policy.json` validates strictly and
+    // rejects an unknown key --- a `_comment` field was tried and `bootc install`
+    // refused the policy with `Unknown key "_comment"`. The reasoning lives in
+    // this function's doc comment, which is where a reader of the repository
+    // looks anyway.
     body.push_str("{\n");
-    body.push_str(&format!(
-        "  \"_comment\": \"{}'s signature policy. Default reject; the identity is a \
-         workflow reference, not merely a repository, because §12.3 refuses an image \
-         signed by a different workflow in this same repository.\",\n",
-        node.name
-    ));
     // Reject by default. The interesting half of a policy is what it refuses,
     // and a default of `insecureAcceptAnything` would make every rule below it
     // decoration --- the same failure §4.4's default-drop exists to avoid.
@@ -54,11 +50,11 @@ fn policy(c: &Cluster, node: &Node) -> Rendered {
         s.certificate_identity()
     ));
     body.push_str("          },\n");
-    body.push_str(&format!(
-        "          \"rekorPublicKeyPath\": \"/etc/containers/rekor.pub\",\n\
-                   \"_transparencyLog\": \"{}\",\n",
-        s.transparency_log
-    ));
+    // Only schema keys. A `_transparencyLog` field was added here to give the
+    // model's value a reader, and `bootc install` rejected the whole policy for
+    // it. The transparency log belongs where signatures are *made* --- the
+    // promotion workflow --- not where they are verified.
+    body.push_str("          \"rekorPublicKeyPath\": \"/etc/containers/rekor.pub\",\n");
     body.push_str("          \"signedIdentity\": { \"type\": \"matchRepository\" }\n");
     body.push_str("        }\n");
     body.push_str("      ]\n");

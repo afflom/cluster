@@ -94,7 +94,13 @@ jobs:
             # Signed before it is copied. A digest that reaches :stable unsigned
             # is one every node's policy would refuse to stage, which would be a
             # cluster-wide halt rather than a caught mistake (§12.3).
-            cosign sign --yes "$ref@$digest"
+            # The transparency log the model declares. Recorded at signing,
+            # which is where a log entry is actually made --- the node-side
+            # policy verifies against the public key it ships, and
+            # containers-policy has no field for a URL.
+            cosign sign --yes \
+              --rekor-url "https://rekor.sigstore.dev" \
+              "$ref@$digest"
             crane copy "$ref@$digest" "$ref:stable"
             body="${body}"$'\n'"$node: $digest"
           done

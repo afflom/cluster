@@ -74,7 +74,7 @@ Feature: definition
     When the model is rendered in memory
     Then the committed bytes equal the rendered bytes for every file
     And no file exists under the tree that the model does not render
-    And every file names a registered definition claim in its header
+    And every file whose format admits a comment names a registered claim in its header
 
   @CD-10 @build
   Scenario: A devcontainer alias survives a migration
@@ -130,6 +130,6 @@ Feature: definition
   Scenario: Every rendered artifact is valid in its own syntax
     Given rendered artifacts in several syntaxes
     When each is read as the kind of file it is
-    Then every JSON document parses
+    Then every JSON document parses and carries only the keys its schema defines
     And every interpreted script carries its interpreter on the first line
-    And the generated provenance is present in a form that syntax admits
+    And every other file carries the generated provenance as a comment

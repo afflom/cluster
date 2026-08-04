@@ -565,11 +565,17 @@ fn the_committed_tree_equals_the_render_cd_09() {
             "{}: every file is covered by the tree-level claim",
             file.path
         );
-        assert!(
-            committed.contains(ASSERTED_BY),
-            "{}: the header must name the claims that assert over it",
-            file.path
-        );
+        // Except where the format refuses it. `containers-policy.json` validates
+        // strictly and rejects any key it does not define, so those files carry
+        // no header --- they are still diff-gated above, and `Rendered::ids`
+        // still names the claims, which is what `check-render` reads (CD-16).
+        if !file.path.ends_with(".json") {
+            assert!(
+                committed.contains(ASSERTED_BY),
+                "{}: the header must name the claims that assert over it",
+                file.path
+            );
+        }
         assert!(
             !file.ids.is_empty(),
             "{}: rendering an artifact nothing asserts about is a gap (§7.2)",
@@ -1059,30 +1065,41 @@ fn every_rendered_artifact_is_valid_in_its_syntax_cd_16() {
     for file in &files {
         let contents = file.contents();
 
-        // Provenance is present whatever the syntax, because `check-render`
-        // reads it and because a reader holding only the file should be able to
-        // tell where it came from.
-        assert!(
-            contents.contains(GENERATED_MARKER) && contents.contains(ASSERTED_BY),
-            "{}: no provenance",
-            file.path
-        );
-
         if file.path.ends_with(".json") {
             json += 1;
             // Parsed, not merely inspected: a document that starts with `{` and
             // is malformed later would pass a first-byte check and fail at
-            // install.
+            // install --- which is exactly how this was found.
             let parsed: serde_json::Value = serde_json::from_str(&contents)
                 .unwrap_or_else(|e| panic!("{}: not valid JSON: {e}", file.path));
+
+            // Schema keys only. `containers-policy.json` validates strictly and
+            // refuses an unknown key; a `_generated` field added for provenance
+            // was rejected by `bootc install` at deployment. A format that will
+            // not carry provenance does not get any --- the file is still
+            // diff-gated, and the claims are in the register.
+            let injected: Vec<&String> = parsed
+                .as_object()
+                .map(|o| o.keys().filter(|k| k.starts_with('_')).collect())
+                .unwrap_or_default();
             assert!(
-                parsed.get("_generated").is_some() && parsed.get("_assertedBy").is_some(),
-                "{}: provenance must be fields, because JSON has no comments",
+                injected.is_empty(),
+                "{}: {injected:?} are not schema keys, and a strict validator \
+                 rejects them only at install",
                 file.path
             );
             assert!(
                 !contents.lines().next().unwrap_or_default().starts_with('#'),
                 "{}: a JSON document cannot open with a comment",
+                file.path
+            );
+        } else {
+            // Everything else carries it, because `check-render` reads it and a
+            // reader holding only the file should be able to tell where it came
+            // from.
+            assert!(
+                contents.contains(GENERATED_MARKER) && contents.contains(ASSERTED_BY),
+                "{}: no provenance",
                 file.path
             );
         }

@@ -54,13 +54,13 @@ model does not sanction.
 | `CD-06` | `build` | `T0` | The rendered kernel arguments carry the base set on every node and the declared isolation set on the measurement node alone. |
 | `CD-07` | `build` | `T0` | The rendered kickstart partitions the boot device as the model declares and contains no secret value, only the named placeholders the installer substitutes. |
 | `CD-08` | `build` | `T0` | The rendered updater, health, garbage-collection and reclamation units carry the intervals, deadlines and budgets model/policy.toml declares, and the updater's environment carries this node's rollout position and every peer's health endpoint. |
-| `CD-09` | `build` | `T0` | The committed generated tree equals what the model renders, contains no file the model does not render, and every file in it names a registered definition claim in its header. |
+| `CD-09` | `build` | `T0` | The committed generated tree equals what the model renders, contains no file the model does not render, and every file whose format admits a comment names a registered definition claim in its header. |
 | `CD-11` | `build` | `T0` | The rendered container signature policy and registry configuration carry the issuer, identity, mirrors and fallbacks the model declares, and every address in a rendered artifact is substituted from the node table rather than written twice. |
 | `CD-12` | `build` | `T0` | Every rendered artifact is copied into an image by some build, every executable a rendered unit invokes is produced by a build or a declared package, every container image the model names in this repository's namespace has a Containerfile, every configuration a unit mounts read-only is rendered, and every control-plane endpoint any component calls is a route it serves. |
 | `CD-13` | `build` | `T0` | Every alert model/policy.toml declares renders as a rule carrying its condition, its duration and its severity, and no declared alert renders to nothing. |
 | `CD-14` | `build` | `T0` | The SSH daemon policy, the SELinux mode and type, and greenboot's deadline and attempt count are rendered from the model rather than declared a second time by an image build. |
 | `CD-15` | `build` | `T0` | The control plane is published on the tailnet by a rendered unit, and the tailnet access policy is rendered from the model's authorized logins and management prefix, advertising no mesh address. |
-| `CD-16` | `build` | `T0` | Every rendered artifact is valid in its own syntax: a JSON document parses, an interpreted script carries its interpreter on the first line, and the generated provenance is present in a form that file's syntax admits. |
+| `CD-16` | `build` | `T0` | Every rendered artifact is valid in its own syntax: a JSON document parses and carries only the keys its schema defines, an interpreted script carries its interpreter on the first line, and every other file carries the generated provenance as a comment. |
 | `CD-10` | `build` | `T0` | The rendered client SSH configuration carries a devcontainer alias that resolves a session's current host from the control plane and falls back to the last known host when the control plane is unreachable. |
 
 ## hardware
