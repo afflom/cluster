@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use cluster_model::render::{render_all, Rendered, ASSERTED_BY, TREE_CLAIM};
+use cluster_model::render::{render_all, Rendered, ASSERTED_BY, GENERATED_MARKER, TREE_CLAIM};
 use cluster_model::Cluster;
 
 fn root() -> PathBuf {
@@ -1040,4 +1040,75 @@ fn the_control_plane_is_published_on_the_tailnet_cd_15() {
 #[test]
 fn the_publish_unit_serves_the_bound_address_cc_06() {
     the_control_plane_is_published_on_the_tailnet_cd_15();
+}
+
+/// `CD-16`: every rendered artifact is valid in its own syntax.
+///
+/// The header used to be `#` unconditionally. That made every rendered JSON
+/// document invalid --- `bootc install` refused the signature policy with
+/// `invalid character '#'`, and only at deployment --- and it pushed the shebang
+/// off line one of the greenboot check, which is the script deciding whether an
+/// unattended reboot stands. Neither failed anything until an image was actually
+/// installed.
+#[test]
+fn every_rendered_artifact_is_valid_in_its_syntax_cd_16() {
+    let files = rendered();
+    let mut json = 0usize;
+    let mut scripts = 0usize;
+
+    for file in &files {
+        let contents = file.contents();
+
+        // Provenance is present whatever the syntax, because `check-render`
+        // reads it and because a reader holding only the file should be able to
+        // tell where it came from.
+        assert!(
+            contents.contains(GENERATED_MARKER) && contents.contains(ASSERTED_BY),
+            "{}: no provenance",
+            file.path
+        );
+
+        if file.path.ends_with(".json") {
+            json += 1;
+            // Parsed, not merely inspected: a document that starts with `{` and
+            // is malformed later would pass a first-byte check and fail at
+            // install.
+            let parsed: serde_json::Value = serde_json::from_str(&contents)
+                .unwrap_or_else(|e| panic!("{}: not valid JSON: {e}", file.path));
+            assert!(
+                parsed.get("_generated").is_some() && parsed.get("_assertedBy").is_some(),
+                "{}: provenance must be fields, because JSON has no comments",
+                file.path
+            );
+            assert!(
+                !contents.lines().next().unwrap_or_default().starts_with('#'),
+                "{}: a JSON document cannot open with a comment",
+                file.path
+            );
+        }
+
+        // Anything with an interpreter line must keep it first: the kernel reads
+        // the first two bytes, and a displaced shebang means the script runs
+        // under whatever the caller happened to use.
+        if file.body.trim_start().starts_with("#!") {
+            scripts += 1;
+            let first = contents.lines().next().unwrap_or_default();
+            assert!(
+                first.starts_with("#!"),
+                "{}: the interpreter line must be first, not `{first}`",
+                file.path
+            );
+            assert!(
+                contents.lines().nth(1).unwrap_or_default().starts_with('#'),
+                "{}: the provenance follows the shebang",
+                file.path
+            );
+        }
+    }
+
+    assert!(json > 0, "no JSON is rendered, so this checks nothing");
+    assert!(
+        scripts > 0,
+        "no scripts are rendered, so this checks nothing"
+    );
 }

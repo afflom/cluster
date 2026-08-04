@@ -45,21 +45,98 @@ pub struct Rendered {
 /// The marker every rendered file opens with, mirroring `CONFORMANCE.md`'s.
 pub const GENERATED_MARKER: &str = "@generated";
 
-/// The prefix of the header line naming the asserting IDs.
-pub const ASSERTED_BY: &str = "# Asserted by:";
+/// The text of the header line naming the asserting IDs.
+///
+/// Without a comment marker, because not every rendered file is commented the
+/// same way --- and one of them cannot be commented at all.
+pub const ASSERTED_BY: &str = "Asserted by:";
+
+/// How a rendered file carries its provenance.
+///
+/// Inferred from the body rather than declared per file. A field somebody has
+/// to set is a field somebody forgets, and the two ways this went wrong were
+/// both silent: a `#` header made `policy.json` invalid JSON, which `bootc
+/// install` rejected only at deployment; and it pushed the shebang off line one
+/// of the greenboot check, which is the script deciding whether an unattended
+/// reboot stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Syntax {
+    /// `#` begins a comment, and the header goes first.
+    Hash,
+    /// An interpreted script: the shebang must stay on line one, so the header
+    /// follows it.
+    Script,
+    /// JSON, which has no comments at all. The provenance becomes two fields.
+    Json,
+}
+
+impl Syntax {
+    /// Which syntax a body is written in.
+    pub fn of(body: &str) -> Self {
+        let start = body.trim_start();
+        if start.starts_with("#!") {
+            Self::Script
+        } else if start.starts_with('{') {
+            Self::Json
+        } else {
+            Self::Hash
+        }
+    }
+}
 
 impl Rendered {
     /// The full file, header included --- the bytes that go on disk.
+    ///
+    /// The header adapts to the file's syntax. It used to be `#` unconditionally,
+    /// which made every rendered JSON document invalid and displaced the shebang
+    /// on every rendered script.
     pub fn contents(&self) -> String {
+        let ids = self.ids.join(", ");
+        match Syntax::of(&self.body) {
+            Syntax::Hash => {
+                let mut out = Self::hash_header(&ids);
+                out.push('\n');
+                out.push_str(&self.body);
+                out
+            }
+            Syntax::Script => {
+                // The interpreter line has to be the first bytes of the file, or
+                // the kernel does not see it and the script runs under whatever
+                // the caller happened to use.
+                let mut lines = self.body.splitn(2, '\n');
+                let shebang = lines.next().unwrap_or_default();
+                let rest = lines.next().unwrap_or_default();
+                let mut out = String::from(shebang);
+                out.push('\n');
+                out.push_str(&Self::hash_header(&ids));
+                out.push_str(rest);
+                out
+            }
+            Syntax::Json => {
+                // JSON carries no comments, so the provenance becomes two
+                // fields. `_` prefixed because every consumer of these documents
+                // ignores unknown keys, and a reader looking for where the file
+                // came from finds it in the file rather than in a commit.
+                let body = self.body.trim_start();
+                let inner = body.strip_prefix('{').unwrap_or(body);
+                format!(
+                    "{{\n  \"_generated\": \"{GENERATED_MARKER} by `just render` from \
+                     model/. Do not edit; R1 makes the model the single source.\",\n  \
+                     \"_assertedBy\": \"{ASSERTED_BY} {ids}\",{inner}"
+                )
+            }
+        }
+    }
+
+    /// The `#`-commented header.
+    fn hash_header(ids: &str) -> String {
         let mut out = String::new();
         out.push_str(&format!(
             "# {GENERATED_MARKER} by `just render` from model/. Do not edit.\n"
         ));
         out.push_str("# R1: the model is the single source. A hand-edit here is the same class\n");
         out.push_str("# of error as a hand-edited CONFORMANCE.md, and check-render says so.\n");
-        out.push_str(&format!("{ASSERTED_BY} {}\n", self.ids.join(", ")));
-        out.push('\n');
-        out.push_str(&self.body);
+        out.push_str(&format!("# {ASSERTED_BY} {ids}\n"));
         out
     }
 
@@ -80,6 +157,15 @@ impl Rendered {
 /// about all of them --- and the gap would be invisible, since the file would
 /// still name a `CD-` ID and pass.
 pub const TREE_CLAIM: &str = "CD-09";
+
+/// The claim that every file is valid in its own syntax (§7.2).
+///
+/// Appended to every file for the same reason [`TREE_CLAIM`] is: it is a
+/// property of all of them, and a renderer that had to remember it would be a
+/// renderer that eventually did not. It exists because the header was `#` for
+/// every file at first, which made every rendered JSON document invalid and
+/// displaced the shebang on every rendered script.
+pub const SYNTAX_CLAIM: &str = "CD-16";
 
 /// Render every artifact the model owns, in a stable order.
 ///
@@ -103,6 +189,7 @@ pub fn render_all(c: &Cluster) -> Vec<Rendered> {
     out.push(ssh::render(c));
     for file in &mut out {
         file.ids.push(TREE_CLAIM);
+        file.ids.push(SYNTAX_CLAIM);
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out

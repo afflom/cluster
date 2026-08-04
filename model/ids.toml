@@ -235,6 +235,17 @@ prefix, advertising no mesh address.
 """
 
 [[id]]
+id = "CD-16"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+Every rendered artifact is valid in its own syntax: a JSON document parses, an
+interpreted script carries its interpreter on the first line, and the generated
+provenance is present in a form that file's syntax admits.
+"""
+
+[[id]]
 id = "CD-10"
 level = "build"
 suite = "definition"

@@ -203,16 +203,16 @@ fn zot(c: &Cluster, node: &Node) -> Rendered {
     let repository = &c.images.signing.repository;
 
     let mut body = String::new();
+    // No `#` preamble: JSON has no comments. The reasoning is in this function's
+    // doc comment, and the `_comment` field carries it for a reader holding only
+    // the file.
+    body.push_str("{\n");
     body.push_str(&format!(
-        "# The registry on {}. It hosts this repository's images, mirrors them from\n\
-         # GHCR every five minutes, and pull-through caches the declared upstreams\n\
-         # so a node's pull does not leave the mesh when it does not have to (§5.4).\n\
-         #\n\
-         # Bound to the mesh loopback: the registry is a mesh service and the\n\
-         # management plane's firewall does not open its port (§4.4).\n",
+        "  \"_comment\": \"The registry on {}. Hosts this repository's images, mirrors \
+         them from the upstream every five minutes, and pull-through caches the declared \
+         fallbacks so a pull does not leave the mesh when it does not have to.\",\n",
         node.name
     ));
-    body.push_str("{\n");
     body.push_str("  \"distSpecVersion\": \"1.1.0\",\n");
     body.push_str("  \"storage\": { \"rootDirectory\": \"/var/lib/registry\", \"gc\": true,\n");
     body.push_str(&format!(

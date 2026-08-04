@@ -21,5 +21,10 @@ repo-model = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
 
+[dev-dependencies]
+# Parsing the rendered JSON in CD-16. A dev dependency: nothing this crate
+# ships reads JSON, and the renderers emit it as text.
+serde_json = { workspace = true }
+
 [lints]
 workspace = true

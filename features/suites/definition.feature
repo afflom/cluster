@@ -125,3 +125,11 @@ Feature: definition
     Then a unit publishes the control plane over TLS on the tailnet
     And the access policy admits only the authorized logins
     And it advertises the management prefix and no mesh address
+
+  @CD-16 @build
+  Scenario: Every rendered artifact is valid in its own syntax
+    Given rendered artifacts in several syntaxes
+    When each is read as the kind of file it is
+    Then every JSON document parses
+    And every interpreted script carries its interpreter on the first line
+    And the generated provenance is present in a form that syntax admits

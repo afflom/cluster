@@ -60,6 +60,7 @@ model does not sanction.
 | `CD-13` | `build` | `T0` | Every alert model/policy.toml declares renders as a rule carrying its condition, its duration and its severity, and no declared alert renders to nothing. |
 | `CD-14` | `build` | `T0` | The SSH daemon policy, the SELinux mode and type, and greenboot's deadline and attempt count are rendered from the model rather than declared a second time by an image build. |
 | `CD-15` | `build` | `T0` | The control plane is published on the tailnet by a rendered unit, and the tailnet access policy is rendered from the model's authorized logins and management prefix, advertising no mesh address. |
+| `CD-16` | `build` | `T0` | Every rendered artifact is valid in its own syntax: a JSON document parses, an interpreted script carries its interpreter on the first line, and the generated provenance is present in a form that file's syntax admits. |
 | `CD-10` | `build` | `T0` | The rendered client SSH configuration carries a devcontainer alias that resolves a session's current host from the control plane and falls back to the last known host when the control plane is unreachable. |
 
 ## hardware

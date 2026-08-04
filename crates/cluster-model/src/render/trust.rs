@@ -27,20 +27,16 @@ fn policy(c: &Cluster, node: &Node) -> Rendered {
     let repository = format!("{}/{}", "ghcr.io", s.repository);
 
     let mut body = String::new();
+    // No `#` preamble: this is JSON, which has none. The reasoning lives in this
+    // function's doc comment and, for a reader holding only the file, in the
+    // `_comment` field below.
+    body.push_str("{\n");
     body.push_str(&format!(
-        "# {}'s signature policy. Default reject: an image this policy does not\n\
-         # explicitly admit does not stage (§12.3).\n\
-         #\n\
-         # The identity below is a *workflow* reference, not merely a repository.\n\
-         # §12.3 is explicit that an image signed by a different workflow in this\n\
-         # same repository must not stage either, and a policy keyed on the\n\
-         # repository alone would admit anything any workflow in it ever signed.\n\
-         #\n\
-         # JSON does not carry comments, so the header above is stripped by the\n\
-         # image build; CL-01 reads the rendered document rather than this file.\n",
+        "  \"_comment\": \"{}'s signature policy. Default reject; the identity is a \
+         workflow reference, not merely a repository, because §12.3 refuses an image \
+         signed by a different workflow in this same repository.\",\n",
         node.name
     ));
-    body.push_str("{\n");
     // Reject by default. The interesting half of a policy is what it refuses,
     // and a default of `insecureAcceptAnything` would make every rule below it
     // decoration --- the same failure §4.4's default-drop exists to avoid.
