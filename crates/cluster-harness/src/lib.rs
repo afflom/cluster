@@ -64,11 +64,27 @@ impl Acceleration {
     }
 
     /// Probe a given path, so the decision itself is testable.
+    ///
+    /// **Opened, not merely looked for.** A hosted runner can carry a
+    /// `/dev/kvm` device node that no process may use --- nested virtualisation
+    /// is documented as unsupported there --- and QEMU meets that with
+    /// `Could not access KVM kernel module: Permission denied` and an immediate
+    /// exit. Testing for the path reported the fixture present, and the tier
+    /// then spent five minutes per test failing to reach a guest that had never
+    /// started.
+    ///
+    /// That is the same shape as the skip notice this file already carries a
+    /// warning about: a check answering a question next to the one it claims.
+    /// "Is there a file called /dev/kvm" and "can this machine accelerate a
+    /// guest" are different questions, and only the second is the tier's.
     pub fn probe_at(path: &Path) -> Self {
-        if path.exists() {
-            Self::Kvm
-        } else {
-            Self::Absent
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+        {
+            Ok(_) => Self::Kvm,
+            Err(_) => Self::Absent,
         }
     }
 
@@ -190,15 +206,19 @@ pub fn qemu_args(
         "-smp".to_string(),
         "2".to_string(),
         "-nographic".to_string(),
-        // Matches `console=ttyS1,115200` in the image kargs and the COM2/SOL
-        // redirection the firmware table declares (§2.4, §8.1).
+        // **Two** serial ports, and the guest's console is the second.
         //
+        // The image is told `console=ttyS1,115200`, matching the COM2/SOL
+        // redirection the firmware table declares (§2.4, §8.1). A QEMU given one
+        // `-serial` provides ttyS0 only, so every boot message the guest wrote
+        // went to a port that did not exist --- and a tier looking at an empty
+        // console cannot tell a guest that failed early from one that never
+        // spoke. The first port is discarded and the second is the one the image
+        // names.
+        "-serial".to_string(),
+        "null".to_string(),
         // To a **file**, not to stdio. The harness spawns QEMU with its stdout
-        // discarded, so `mon:stdio` sent every boot message to nowhere --- and a
-        // guest that booted and stopped short of `sshd` was indistinguishable
-        // from one that never started. The console is the only thing that says
-        // which, and a tier that cannot say why a boot failed is a tier that
-        // costs five minutes to learn nothing.
+        // discarded, so `mon:stdio` sent every boot message to nowhere as well.
         "-serial".to_string(),
         format!("file:{console}"),
         "-drive".to_string(),
@@ -469,6 +489,23 @@ mod tests {
             Acceleration::Absent
         );
         assert!(!Acceleration::Absent.can_boot());
+
+        // Present but unusable is *absent*, and this is the case the probe was
+        // getting wrong. A hosted runner can carry a `/dev/kvm` no process may
+        // open, and testing for the path called that bootable --- the tier then
+        // spent five minutes per test failing to reach a guest QEMU had refused
+        // to start.
+        //
+        // `/proc/version` stands in: it exists on every Linux and refuses to be
+        // opened for writing, which is the shape of the failure without needing
+        // a machine that actually has an unusable KVM.
+        let unusable = Path::new("/proc/version");
+        assert!(unusable.exists(), "the stand-in must exist to stand in");
+        assert_eq!(
+            Acceleration::probe_at(unusable),
+            Acceleration::Absent,
+            "a device that exists and cannot be opened for use is not an accelerator"
+        );
 
         let notice = Acceleration::SKIP_NOTICE;
         assert!(notice.starts_with("SKIPPED"));

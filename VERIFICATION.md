@@ -209,6 +209,26 @@ That is the second time in this repository a gate has looked green for a reason
 unrelated to what it claims to check, and both times the tell was the same: the
 failure message did not mention the thing being planted.
 
+**The accelerator probe asked whether a file existed, not whether a guest could
+be accelerated.** `/dev/kvm` can be present on a hosted runner and unusable ---
+nested virtualisation is documented as unsupported there --- and QEMU meets that
+with `Could not access KVM kernel module: Permission denied` and an immediate
+exit. Testing for the path reported the fixture present, so the tier ran, and six
+tests each spent five minutes failing to reach a guest that had never started.
+The probe opens the device now, so an unusable one is an honest skip in a second.
+
+That is the same shape as the skip notice that named `/dev/kvm` while the real
+problem was a missing firmware image: a check answering the question next to the
+one it claims. "Is there a file called /dev/kvm" and "can this machine
+accelerate a guest" are different questions, and only the second is the tier's.
+
+Two things kept that hidden. The harness reported QEMU "still running" by testing
+for `/proc/<pid>` --- but a process that has exited and not been reaped is a
+zombie, and a zombie still has one, so a dead QEMU read as a live guest. And the
+guest's console was directed at one serial port while the image is told
+`console=ttyS1,115200`, which is the *second* --- so every boot message went to a
+port that did not exist. QEMU's own stderr was piped and never read at all.
+
 **Three things had to be true before a guest could answer at all, and none of
 them had ever been exercised.** T1 had never run, so every step past "the disk
 exists" was unverified, and each one surfaced only when the one before it was

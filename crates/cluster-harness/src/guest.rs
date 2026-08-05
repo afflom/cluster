@@ -70,7 +70,30 @@ pub struct Guest {
     command: Vec<String>,
     /// Where the guest's serial console is being written.
     console: PathBuf,
+    /// Where QEMU's own diagnostics are being written.
+    ///
+    /// Separate from the console: one is what the guest said, the other is what
+    /// refused to start it. The harness piped this and never read it, so a QEMU
+    /// that rejected an argument looked exactly like a guest that booted and
+    /// went quiet.
+    qemu_log: PathBuf,
     process: Option<Child>,
+}
+
+/// The last lines of a log, or why it could not be read.
+///
+/// Used for both the guest's console and QEMU's own diagnostics. A tier that
+/// spends five minutes per test and then reports only `Connection refused` has
+/// learned nothing a `ping` would not have said faster.
+fn tail_of(path: &std::path::Path, lines: usize) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(text) if text.trim().is_empty() => format!("({} is empty)", path.display()),
+        Ok(text) => {
+            let tail: Vec<&str> = text.lines().rev().take(lines).collect();
+            tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+        }
+        Err(e) => format!("({} is unreadable: {e})", path.display()),
+    }
 }
 
 /// Where the harness keeps its disks and where it finds OVMF.
@@ -307,11 +330,18 @@ impl Guest {
             bulk.as_deref(),
             &console.display().to_string(),
         );
+        let qemu_log = fixture.scratch.join(format!("{}-qemu.log", node.name));
+        let diagnostics = std::fs::File::create(&qemu_log)
+            .map_err(|e| fail("create the qemu log", e.to_string()))?;
         let process = Command::new("qemu-system-x86_64")
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            // To a file, not a pipe. A pipe nobody reads fills and blocks the
+            // writer; more to the point, this one was never read at all, so a
+            // QEMU that refused an argument and exited was indistinguishable
+            // from a guest that booted and said nothing.
+            .stderr(Stdio::from(diagnostics))
             .spawn()
             .map_err(|e| fail("spawn qemu", e.to_string()))?;
 
@@ -320,6 +350,7 @@ impl Guest {
             ssh_port: ssh_port(node),
             command: args,
             console,
+            qemu_log,
             disk,
             process: Some(process),
         })
@@ -357,46 +388,42 @@ impl Guest {
         let Some(process) = &self.process else {
             return "no QEMU process was recorded for this guest".to_string();
         };
-        // `try_wait` needs `&mut`, and this is reached from `&self` --- so the
-        // question is asked of the OS instead. A process that has exited leaves
-        // no entry under /proc, and a zombie is still an exit.
-        let alive = std::path::Path::new(&format!("/proc/{}", process.id())).exists();
+        // Asked of `/proc`, because `try_wait` needs `&mut` and this is reached
+        // from `&self`. **The state matters, not the existence.** A process that
+        // has exited and not been reaped is a zombie, and a zombie still has a
+        // `/proc/<pid>` --- so testing for the directory reported "still
+        // running" about a QEMU that had died on its arguments, which is exactly
+        // the wrong half of the answer.
+        let alive = match std::fs::read_to_string(format!("/proc/{}/stat", process.id())) {
+            // `stat` is `pid (comm) state ...`, and `comm` may contain spaces
+            // and parentheses --- so the state is the field after the *last*
+            // `)`, not the third whitespace-separated one.
+            Ok(stat) => stat
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next())
+                .is_some_and(|state| state != "Z"),
+            Err(_) => false,
+        };
         if alive {
             format!(
                 "QEMU (pid {}) is still running, so the guest booted and did not reach \
-                 sshd. The last of its console:\n{}\nStarted with: qemu-system-x86_64 {}",
+                 sshd. The last of its console:\n{}\nQEMU said:\n{}\nStarted with: \
+                 qemu-system-x86_64 {}",
                 process.id(),
-                self.console_tail(60),
+                tail_of(&self.console, 60),
+                tail_of(&self.qemu_log, 20),
                 self.command.join(" ")
             )
         } else {
             format!(
-                "QEMU (pid {}) is gone, so the guest never ran --- the arguments or the \
-                 disk are wrong rather than the image. The last of its console:\n{}\n\
-                 Started with: qemu-system-x86_64 {}",
+                "QEMU (pid {}) has exited, so the guest never ran --- the arguments or \
+                 the disk are wrong rather than the image. QEMU said:\n{}\nThe last of \
+                 its console:\n{}\nStarted with: qemu-system-x86_64 {}",
                 process.id(),
-                self.console_tail(60),
+                tail_of(&self.qemu_log, 20),
+                tail_of(&self.console, 60),
                 self.command.join(" ")
             )
-        }
-    }
-
-    /// The last lines the guest wrote to its serial console.
-    ///
-    /// This is what a failed boot has to say for itself, and for two runs it was
-    /// being written to a discarded stdout. A tier that spends five minutes per
-    /// test and then reports only `Connection refused` has learned nothing that
-    /// a `ping` would not have told it faster.
-    fn console_tail(&self, lines: usize) -> String {
-        match std::fs::read_to_string(&self.console) {
-            Ok(text) => {
-                let tail: Vec<&str> = text.lines().rev().take(lines).collect();
-                tail.into_iter().rev().collect::<Vec<_>>().join("\n")
-            }
-            Err(e) => format!(
-                "(the console at {} is unreadable: {e})",
-                self.console.display()
-            ),
         }
     }
 
