@@ -23,6 +23,8 @@ pub(crate) fn render(c: &Cluster) -> Vec<Rendered> {
     // deliberately not running two thirds of them.
     let mut out = vec![
         init_service(c),
+        peers_service(c),
+        peers_timer(c),
         updater_env(c),
         updater_service(c),
         updater_timer(c),
@@ -825,6 +827,89 @@ fn init_service(c: &Cluster) -> Rendered {
     ));
     Rendered::new(
         node_path("systemd/cluster-init.service"),
+        vec!["CD-01", "CD-17"],
+        body,
+    )
+}
+
+/// `cluster-init peers`, which addresses the mesh as machines appear (§3.3).
+///
+/// Ordered before **nothing**. Every other unit here can be ordered against
+/// something because it waits on this machine; this one waits on hardware
+/// somebody else has to power on, and a boot must never do that. The first
+/// machine of a fleet is necessarily alone, and §12.1 promises it comes up
+/// anyway.
+///
+/// Restarted for ever rather than run once. A mesh port with nothing on the far
+/// end is not a failure --- it is a cable whose peer has not registered yet ---
+/// so each pass asks briefly and the restart supplies the patience.
+fn peers_service(c: &Cluster) -> Rendered {
+    let discovery = &c.network.discovery;
+    let mut body = String::new();
+    body.push_str(&format!(
+        "# Addresses each mesh port as the machine on the far end appears (§3.3).\n\
+         #\n\
+         # Ordered before nothing, and that is the point. Waiting on a peer that may\n\
+         # not be powered on is exactly what must not block a boot: cluster-init did\n\
+         # both halves once, and the first machine of a fleet sat through the whole\n\
+         # {}s discovery timeout on each port before sshd started (§12.1).\n\
+         #\n\
+         # Restarted for ever. A port with no peer is a cable whose far end has not\n\
+         # registered yet, so each pass asks briefly and the restart is the patience.\n\n",
+        discovery.timeout_s
+    ));
+    body.push_str(&section(
+        "Unit",
+        &[
+            "Description=Address the mesh as peers appear".to_string(),
+            "After=systemd-networkd.service".to_string(),
+            "Wants=systemd-networkd.service".to_string(),
+        ],
+    ));
+    body.push_str(&section(
+        "Service",
+        &[
+            "Type=oneshot".to_string(),
+            format!("EnvironmentFile={NODE_ENV}"),
+            "ExecStart=/usr/bin/cluster-init peers".to_string(),
+        ],
+    ));
+    body.push_str(&section(
+        "Install",
+        &["WantedBy=multi-user.target".to_string()],
+    ));
+    Rendered::new(
+        node_path("systemd/cluster-peers.service"),
+        vec!["CD-01", "CD-17"],
+        body,
+    )
+}
+
+/// The timer that keeps `cluster-peers` asking.
+fn peers_timer(c: &Cluster) -> Rendered {
+    let discovery = &c.network.discovery;
+    // Often enough that a machine powered on second joins promptly, rarely
+    // enough that a settled fleet is not announcing into an empty segment all
+    // day. Derived from the discovery interval rather than chosen here, so a
+    // model change moves both.
+    let every = (discovery.interval_ms / 1000).max(15);
+    let body = format!(
+        "# Keeps cluster-peers asking, every {every}s (§3.3, §12.1).\n\
+         #\n\
+         # A mesh port whose peer has not registered is asked again rather than\n\
+         # waited on, so no boot and no unit blocks on a machine somebody has yet\n\
+         # to power on.\n\n\
+         [Unit]\n\
+         Description=Ask again for the peers that have not appeared\n\n\
+         [Timer]\n\
+         OnBootSec=5\n\
+         OnUnitActiveSec={every}\n\
+         AccuracySec=1\n\n\
+         [Install]\n\
+         WantedBy=timers.target\n"
+    );
+    Rendered::new(
+        node_path("systemd/cluster-peers.timer"),
         vec!["CD-01", "CD-17"],
         body,
     )

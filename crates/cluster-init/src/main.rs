@@ -1,17 +1,32 @@
 //! `cluster-init`: what a machine works out about itself at boot (`SPEC.md`
 //! §2.3, §3.1, §3.3, §4.1).
 //!
-//! Ordered before `systemd-networkd`, because the units it writes are the ones
-//! networkd will read. The sequence is:
+//! **Two halves, and the split is what keeps a boot short.**
+//!
+//! `cluster-init` runs once, ordered before `systemd-networkd`, because the
+//! units it writes are the ones networkd will read:
 //!
 //! 1. read the rendered policy (`init.conf`), which carries every threshold;
 //! 2. classify this machine's ports by supported link speed (§3.1);
 //! 3. decide from its own disks whether it is the storage node (§2.3.1);
-//! 4. bring the mesh ports up link-local and discover the peer on each (§3.3);
-//! 5. self-assign, or ask the registrar for an ordinal and a role (§2.3.2);
-//! 6. derive every address from the ordinal and write the units (§4.1);
-//! 7. write the role marker, the node environment, and the role's firewall
-//!    include, then apply the role's kernel arguments if it has any (§8.4, §8.5).
+//! 4. take the ordinal that entitles it to, or ask the registrar for one (§2.3.2);
+//! 5. derive the loopback and LAN addresses and write those units (§4.1);
+//! 6. write the role marker, the node environment, and the role's firewall
+//!    include, then apply the role's kernel arguments (§8.4, §8.5).
+//!
+//! `cluster-init peers` runs continuously afterwards, ordered before nothing. It
+//! addresses each mesh port as the machine on the far end appears.
+//!
+//! The mesh is the half that has to wait on hardware somebody else has to power
+//! on, and a boot must never do that. Doing both in one boot-blocking unit meant
+//! the first machine of a fleet sat through the discovery timeout on each of its
+//! ports before `sshd` started --- ten minutes of a guest that had booted
+//! perfectly and could not be reached, which is the opposite of §12.1's promise
+//! that a fleet can be powered on in any order.
+//!
+//! The one wait that *is* a boot's business belongs to a machine holding no bulk
+//! disk: it has no ordinal, no role and no address until the registrar answers,
+//! so there is nothing it could usefully do first.
 //!
 //! Every step that can decide something wrongly lives in the library beside this
 //! file and is tested there. What is here is the ordering and the I/O.
@@ -21,6 +36,7 @@
 //! next, and a node that started its services anyway would look healthy while
 //! being wrong (§3.1, §21.11).
 
+use std::collections::BTreeMap;
 use std::net::Ipv6Addr;
 use std::path::Path;
 use std::process::{Command, ExitCode};
@@ -34,11 +50,21 @@ use cluster_init::net::{self, Wire};
 use cluster_init::role::{self, Device, Registry};
 use cluster_init::units::{self, Metrics, PeeredPort};
 use cluster_init::{
-    InitError, POLICY_PATH, REGISTRY_PATH, RUNTIME_DIR, RUNTIME_NETWORK_DIR, SECRET_PATH,
+    InitError, APPLIED_KARGS_PATH, POLICY_PATH, REGISTRY_PATH, RUNTIME_DIR, RUNTIME_NETWORK_DIR, SECRET_PATH,
 };
 
 fn main() -> ExitCode {
-    match run() {
+    // `cluster-init` at boot, `cluster-init peers` continuously afterwards.
+    //
+    // The split is what keeps a boot short. Peer discovery waits on machines
+    // that may not be powered on yet, and the registrar has nothing to wait
+    // *for*: it knows its ordinal from its own disks. Doing both in one
+    // boot-blocking unit meant the first machine of a fleet sat through the
+    // whole discovery timeout on each mesh port before `sshd` could start ---
+    // ten minutes of a guest that had booted perfectly and could not be reached,
+    // which is the opposite of what §12.1 promises.
+    let peers_only = std::env::args().nth(1).as_deref() == Some("peers");
+    match if peers_only { peers() } else { run() } {
         Ok(summary) => {
             println!("cluster-init: {summary}");
             ExitCode::SUCCESS
@@ -71,28 +97,28 @@ fn run() -> Result<String, InitError> {
     let addressing = addressing(&config)?;
     let wire = wire(&config)?;
 
-    // The registrar knows its ordinal without asking; every other machine has to
-    // find it across a cable (§2.3.1, §2.3.2).
-    let (ordinal, role_id, peers) = if is_registrar {
+    // The registrar knows its ordinal without asking, so it does not wait here
+    // at all --- the mesh ports take their addresses in `cluster-peers`, as the
+    // machines on the far end register. Every other machine genuinely cannot
+    // proceed without an answer: it has no ordinal, no role and no address, so
+    // it waits, bounded by the discovery timeout (§2.3.1, §2.3.2, §12.1).
+    let (ordinal, role_id) = if is_registrar {
         let ordinal = detected.ordinal.ok_or_else(|| {
             InitError::Config("the self-detected role pins no ordinal (§2.3.2)".into())
         })?;
-        let peers = serve_and_discover(
-            &config,
-            &classified,
-            &machine_id,
-            ordinal,
-            &detected.id,
-            &wire,
-        )?;
-        (ordinal, detected.id.clone(), peers)
+        // Create the join secret now, so it exists before anything asks for it.
+        load_or_create_secret()?;
+        (ordinal, detected.id.clone())
     } else {
-        let (grant, peers) = join(&classified, &machine_id, &wire)?;
+        let grant = join_for_ordinal(&classified, &machine_id, &wire)?;
         // The join secret never touches a rendered artifact or an image. It
         // arrives here and goes to a file only this node's root can read (§12.2).
         write_private(Path::new(SECRET_PATH), &grant.secret)?;
-        (grant.ordinal, grant.role, peers)
+        (grant.ordinal, grant.role)
     };
+    // No mesh addresses yet: which ordinal is on which cable is `cluster-peers`'
+    // question, and it is the one question that has to wait for another machine.
+    let peers: Vec<PeeredPort> = Vec::new();
 
     let name = config.name_of(ordinal)?;
     let short = name
@@ -284,8 +310,11 @@ fn role_firewall_include(role: &str) -> Result<(), InitError> {
 /// boots all three roles and isolating the storage node's cores would cost half
 /// its CPU to no purpose.
 ///
-/// Idempotent: setting the same options twice is a no-op, so this runs on every
-/// boot without accumulating anything.
+/// **Only when they have changed.** That call *stages a new deployment*, so
+/// running it unconditionally would stage one on every boot of every machine ---
+/// including the two roles whose set is empty, to remove a source that was never
+/// there. What was applied last is recorded beside the registry, and a boot that
+/// would set the same thing does nothing at all.
 fn apply_role_kargs(role: &str) -> Result<(), InitError> {
     let path = format!("/usr/lib/cluster/role-kargs-{role}.conf");
     let text = std::fs::read_to_string(&path)
@@ -296,6 +325,12 @@ fn apply_role_kargs(role: &str) -> Result<(), InitError> {
         .unwrap_or_default()
         .trim()
         .to_string();
+
+    let applied = Path::new(APPLIED_KARGS_PATH);
+    let last = std::fs::read_to_string(applied).unwrap_or_default();
+    if last.trim() == options {
+        return Ok(());
+    }
 
     let mut command = Command::new("bootc");
     command.args([
@@ -316,6 +351,9 @@ fn apply_role_kargs(role: &str) -> Result<(), InitError> {
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
+    // Recorded only after it succeeded, so a failed apply is retried rather than
+    // remembered as done.
+    write_private(applied, &options)?;
     Ok(())
 }
 
@@ -332,104 +370,190 @@ fn wire(config: &Config) -> Result<Wire, InitError> {
     })
 }
 
-/// The registrar's half: announce, hand out places, and learn who is on each
-/// cable (§2.3.2, §3.3).
+/// The continuous half: keep the mesh addressed as machines appear (§3.3, §12.1).
 ///
-/// It serves and discovers in the same pass because they are the same traffic. A
-/// machine asking for a place is also telling the registrar which cable it is
-/// on, and a second pass would be a second chance for the answer to change.
-fn serve_and_discover(
-    config: &Config,
-    classified: &Classified,
-    machine_id: &str,
-    ordinal: u32,
-    role_id: &str,
-    wire: &Wire,
-) -> Result<Vec<PeeredPort>, InitError> {
-    let secret = load_or_create_secret()?;
-    let mut registry: Registry = match std::fs::read_to_string(REGISTRY_PATH) {
-        Ok(text) => serde_json::from_str(&text)
-            .map_err(|e| InitError::Registry(format!("reading {REGISTRY_PATH}: {e}")))?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Registry::default(),
-        Err(e) => return Err(InitError::Io(format!("reading {REGISTRY_PATH}: {e}"))),
+/// Run by `cluster-peers.service` after networkd, restarted for ever. It is
+/// deliberately *not* ordered before anything: waiting on a machine that may not
+/// be powered on yet is exactly what must never block a boot, and the first
+/// machine of a fleet is necessarily alone.
+///
+/// Each pass does one thing per mesh port: if this node is the registrar it
+/// answers whatever asks, and either way it learns which ordinal is on the far
+/// end and writes that port's `.network` unit. A port whose peer has not
+/// appeared is left unaddressed and asked again next pass.
+fn peers() -> Result<String, InitError> {
+    let policy = std::fs::read_to_string(POLICY_PATH)
+        .map_err(|e| InitError::Io(format!("reading {POLICY_PATH}: {e}")))?;
+    let config = Config::parse(&policy)?;
+    let classified = links::classify(&observed_ports()?, thresholds(&config)?)?;
+    let addressing = addressing(&config)?;
+    let wire = wire(&config)?;
+
+    // What this node already worked out about itself, at boot.
+    let env = std::fs::read_to_string(Path::new(RUNTIME_DIR).join("node.env"))
+        .map_err(|e| InitError::Io(format!("reading the node environment: {e}")))?;
+    let value = |key: &str| -> Option<String> {
+        env.lines()
+            .find_map(|l| l.trim().strip_prefix(&format!("{key}=")))
+            .map(str::to_string)
+    };
+    let ordinal: u32 = value("CLUSTER_ORDINAL")
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| {
+            InitError::Config(
+                "the node environment carries no ordinal, so cluster-init has not run \
+                 (§2.3.2)"
+                    .into(),
+            )
+        })?;
+    let role_id = value("CLUSTER_ROLE")
+        .ok_or_else(|| InitError::Config("the node environment carries no role (§2.3)".into()))?;
+    let machine_id = std::fs::read_to_string(config.string("machine_id_path")?)
+        .map_err(|e| InitError::Io(format!("reading the machine id: {e}")))?
+        .trim()
+        .to_string();
+    let is_registrar = config
+        .self_detected_role()
+        .map(|r| r.id == role_id)
+        .unwrap_or(false);
+
+    let own = Announcement {
+        machine_id: machine_id.clone(),
+        ordinal: Some(ordinal),
+        role: Some(role_id.clone()),
+        is_registrar,
     };
 
+    let secret = if is_registrar {
+        load_or_create_secret()?
+    } else {
+        String::new()
+    };
     let order: Vec<String> = config
         .assigned_roles()
         .iter()
         .map(|r| r.id.to_string())
         .collect();
-    let first_free = ordinal + 1;
     let fleet_size = config.number("fleet_size")?;
+    let first_free = config
+        .self_detected_role()
+        .ok()
+        .and_then(|r| r.ordinal)
+        .unwrap_or(1)
+        + 1;
 
-    let own = Announcement {
-        machine_id: machine_id.to_string(),
-        ordinal: Some(ordinal),
-        role: Some(role_id.to_string()),
-        is_registrar: true,
+    let metrics = Metrics {
+        direct: config.number("direct_metric")?,
+        transit: config.number("transit_metric")?,
     };
+    let mesh_mtu = config.number("mesh_mtu")?;
 
-    let mut peers = Vec::new();
-    for port in &classified.mesh {
-        let until = Instant::now() + wire.timeout;
-        let granted = net::serve_grants(&port.name, &own, wire, &secret, until, |id| {
-            let assignment = registry.register(id, &order, first_free, fleet_size)?;
-            Ok((assignment.ordinal, assignment.role))
-        })?;
-        // Persist before the next port. A grant that was sent and not recorded
-        // would be handed out again to a different machine after a reboot, and
-        // two machines would answer to one name.
-        write_private(
-            Path::new(REGISTRY_PATH),
-            &serde_json::to_string_pretty(&registry)
-                .map_err(|e| InitError::Registry(e.to_string()))?,
-        )?;
+    let mut known: BTreeMap<String, u32> = BTreeMap::new();
+    for (index, port) in classified.mesh.iter().enumerate() {
+        if known.contains_key(&port.name) {
+            continue;
+        }
 
-        let peer_ordinal = match granted.first() {
-            Some(grant) => grant.ordinal,
-            // Nothing asked on this cable, so either the machine on it already
-            // has a place --- ask it who it is --- or there is no machine on it
-            // yet.
-            None => match net::discover_peer(&port.name, &own, wire) {
-                Ok(found) => discovery_ordinal(&found.peer)?,
-                // **Not fatal, and this is the difference between the registrar
-                // and everyone else.** The registrar knows its ordinal from its
-                // own disks (§2.3.1), so a cable with nothing on the far end
-                // costs it that one link's addresses and nothing else. §12.1
-                // promises exactly this: a machine powered on before the others
-                // comes up and they join it, rather than the first machine
-                // refusing to boot because it is first.
-                //
-                // A machine that is *not* the registrar cannot do this. It has
-                // no ordinal without an answer, so `join` below treats the same
-                // silence as fatal.
-                Err(InitError::Discovery(reason)) => {
-                    eprintln!(
-                        "cluster-init: {} has no peer yet ({reason}); leaving it \
-                         unaddressed. The link takes its addresses when the machine \
-                         on the far end registers (§3.3, §12.1)",
-                        port.name
-                    );
-                    continue;
-                }
-                Err(e) => return Err(e),
-            },
+        // One short window per port per pass. Short, because a pass that waited
+        // the whole discovery timeout on a fleet of one would answer nothing for
+        // five minutes and then do it again --- and this unit restarts for ever,
+        // so patience belongs in the restart rather than in the wait.
+        let window = wire.interval * 4;
+        let brief = Wire {
+            timeout: window,
+            ..wire.clone()
         };
-        peers.push(PeeredPort {
+
+        if is_registrar {
+            let mut registry: Registry = match std::fs::read_to_string(REGISTRY_PATH) {
+                Ok(text) => serde_json::from_str(&text)
+                    .map_err(|e| InitError::Registry(format!("reading {REGISTRY_PATH}: {e}")))?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Registry::default(),
+                Err(e) => return Err(InitError::Io(format!("reading {REGISTRY_PATH}: {e}"))),
+            };
+            let until = Instant::now() + window;
+            let granted = net::serve_grants(&port.name, &own, &brief, &secret, until, |id| {
+                let assignment = registry.register(id, &order, first_free, fleet_size)?;
+                Ok((assignment.ordinal, assignment.role))
+            })?;
+            // Persisted before the address is written. A grant that was sent and
+            // not recorded would be handed out again to a different machine after
+            // a reboot, and two machines would answer to one name.
+            write_private(
+                Path::new(REGISTRY_PATH),
+                &serde_json::to_string_pretty(&registry)
+                    .map_err(|e| InitError::Registry(e.to_string()))?,
+            )?;
+            if let Some(grant) = granted.first() {
+                known.insert(port.name.clone(), grant.ordinal);
+            }
+        }
+
+        if !known.contains_key(&port.name) {
+            match net::discover_peer(&port.name, &own, &brief) {
+                Ok(found) => {
+                    if let Some(peer) = found.peer.ordinal {
+                        known.insert(port.name.clone(), peer);
+                    }
+                }
+                // Nothing on this cable yet. Not an error: the machine on the
+                // far end may not have been powered on, which is the case §12.1
+                // exists to survive.
+                Err(InitError::Discovery(_)) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+
+        let Some(peer_ordinal) = known.get(&port.name).copied() else {
+            continue;
+        };
+        let peered = PeeredPort {
             port: port.clone(),
             peer_ordinal,
-        });
+        };
+        let units = units::mesh_units(&[peered], ordinal, &addressing, mesh_mtu, metrics)?;
+        for (_, body) in &units {
+            std::fs::write(
+                Path::new(RUNTIME_NETWORK_DIR).join(units::mesh_unit_name(index)),
+                body,
+            )?;
+        }
     }
-    Ok(peers)
+
+    if !known.is_empty() {
+        // networkd reads what is under /run, so it has to be told the set
+        // changed. A reload rather than a restart: restarting would drop every
+        // address on the machine to add one.
+        let reload = Command::new("networkctl")
+            .arg("reload")
+            .output()
+            .map_err(|e| InitError::Io(format!("running networkctl reload: {e}")))?;
+        if !reload.status.success() {
+            return Err(InitError::Io(format!(
+                "networkctl reload refused the new units: {}",
+                String::from_utf8_lossy(&reload.stderr).trim()
+            )));
+        }
+    }
+
+    Ok(format!(
+        "{} of {} mesh port(s) addressed",
+        known.len(),
+        classified.mesh.len()
+    ))
 }
 
-/// Every other machine's half: find the registrar, ask for a place, then learn
-/// who is on the remaining cable (§2.3.2, §3.3).
-fn join(
+/// Ask the registrar for a place, waiting on whichever cable reaches it.
+///
+/// This is the one wait a boot legitimately blocks on: a machine holding no bulk
+/// disk has no ordinal, no role and no address until the registrar answers, so
+/// there is nothing it could usefully do first (§2.3.2). It is bounded by the
+/// discovery timeout, which §12.1 sets longer than a cold boot.
+fn join_for_ordinal(
     classified: &Classified,
     machine_id: &str,
     wire: &Wire,
-) -> Result<(discovery::Grant, Vec<PeeredPort>), InitError> {
+) -> Result<discovery::Grant, InitError> {
     let own = Announcement {
         machine_id: machine_id.to_string(),
         ordinal: None,
@@ -441,7 +565,13 @@ fn join(
     // mesh port is asked (§3.3).
     let mut found = Vec::new();
     for port in &classified.mesh {
-        found.push(net::discover_peer(&port.name, &own, wire)?);
+        match net::discover_peer(&port.name, &own, wire) {
+            Ok(peer) => found.push(peer),
+            // A cable with nothing on it is not an answer, and not yet a
+            // failure: the registrar may be on the other one.
+            Err(InitError::Discovery(_)) => continue,
+            Err(e) => return Err(e),
+        }
     }
     let registrar = discovery::registrar_among(&found)?.ok_or_else(|| {
         InitError::Registry(
@@ -452,41 +582,7 @@ fn join(
         )
     })?;
 
-    let grant = net::request_place(&registrar.interface, &own, wire)?;
-
-    // Now that this machine has an ordinal, the remaining cable's peer is
-    // whoever answered on it.
-    let mut peers = Vec::new();
-    for discovered in &found {
-        let port = classified
-            .mesh
-            .iter()
-            .find(|p| p.name == discovered.interface)
-            .ok_or_else(|| {
-                InitError::Discovery(format!("{} is not a mesh port", discovered.interface))
-            })?;
-        peers.push(PeeredPort {
-            port: port.clone(),
-            peer_ordinal: discovery_ordinal(&discovered.peer)?,
-        });
-    }
-    Ok((grant, peers))
-}
-
-/// A peer's ordinal, or a refusal.
-///
-/// A peer that has not registered yet has no ordinal, and there is no address to
-/// put on the cable that reaches it. Waiting is the caller's job; guessing is
-/// nobody's.
-fn discovery_ordinal(peer: &Announcement) -> Result<u32, InitError> {
-    peer.ordinal.ok_or_else(|| {
-        InitError::Discovery(format!(
-            "the machine on the far end ({}) has no ordinal yet, so this cable has no \
-             addresses. Which addresses a link carries follows from which two ordinals it \
-             joins (§4.1)",
-            peer.machine_id
-        ))
-    })
+    net::request_place(&registrar.interface, &own, wire)
 }
 
 /// The join secret, generated once on the registrar's first boot (§12.2).

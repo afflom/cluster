@@ -193,7 +193,7 @@ RUN checkmodule -M -m -o /tmp/cluster.mod /usr/share/selinux/cluster.te \
 # image for three roles means, and it is why `cluster-health`'s "no failed
 # units" check stays honest on a machine deliberately running a third of them.
 RUN systemctl enable \
-      cluster-init.service \
+      cluster-init.service cluster-peers.timer \
       nftables.service cluster-hosts.service \
       cluster-health.service cluster-updater.timer cluster-gc.timer \
       podman.socket \

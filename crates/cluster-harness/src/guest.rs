@@ -68,6 +68,8 @@ pub struct Guest {
     /// The arguments it was started with, kept so that a boot that never
     /// answers can say what was actually run.
     command: Vec<String>,
+    /// Where the guest's serial console is being written.
+    console: PathBuf,
     process: Option<Child>,
 }
 
@@ -295,6 +297,7 @@ impl Guest {
             None
         };
 
+        let console = fixture.scratch.join(format!("{}-console.log", node.name));
         let args = qemu_args(
             cluster,
             node,
@@ -302,6 +305,7 @@ impl Guest {
             &fixture.firmware_code.display().to_string(),
             &vars.display().to_string(),
             bulk.as_deref(),
+            &console.display().to_string(),
         );
         let process = Command::new("qemu-system-x86_64")
             .args(&args)
@@ -315,6 +319,7 @@ impl Guest {
             node: node.name.clone(),
             ssh_port: ssh_port(node),
             command: args,
+            console,
             disk,
             process: Some(process),
         })
@@ -359,17 +364,39 @@ impl Guest {
         if alive {
             format!(
                 "QEMU (pid {}) is still running, so the guest booted and did not reach \
-                 sshd. Serial output is on the tier's stdout. Started with: qemu-system-x86_64 {}",
+                 sshd. The last of its console:\n{}\nStarted with: qemu-system-x86_64 {}",
                 process.id(),
+                self.console_tail(60),
                 self.command.join(" ")
             )
         } else {
             format!(
                 "QEMU (pid {}) is gone, so the guest never ran --- the arguments or the \
-                 disk are wrong rather than the image. Started with: qemu-system-x86_64 {}",
+                 disk are wrong rather than the image. The last of its console:\n{}\n\
+                 Started with: qemu-system-x86_64 {}",
                 process.id(),
+                self.console_tail(60),
                 self.command.join(" ")
             )
+        }
+    }
+
+    /// The last lines the guest wrote to its serial console.
+    ///
+    /// This is what a failed boot has to say for itself, and for two runs it was
+    /// being written to a discarded stdout. A tier that spends five minutes per
+    /// test and then reports only `Connection refused` has learned nothing that
+    /// a `ping` would not have told it faster.
+    fn console_tail(&self, lines: usize) -> String {
+        match std::fs::read_to_string(&self.console) {
+            Ok(text) => {
+                let tail: Vec<&str> = text.lines().rev().take(lines).collect();
+                tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+            }
+            Err(e) => format!(
+                "(the console at {} is unreadable: {e})",
+                self.console.display()
+            ),
         }
     }
 

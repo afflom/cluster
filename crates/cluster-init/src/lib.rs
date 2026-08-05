@@ -108,3 +108,11 @@ pub const REGISTRY_PATH: &str = "/var/lib/cluster/registry.json";
 /// handed to each node when it registers. It appears in no model file, no image,
 /// no rendered artifact and no repository.
 pub const SECRET_PATH: &str = "/var/lib/cluster/join.secret";
+
+/// What `bootc loader-entries` was last told, so it is told again only on a
+/// change (§8.5).
+///
+/// That call stages a new deployment. Making it unconditionally would stage one
+/// on every boot of every machine --- including the two roles whose set is empty,
+/// to remove a source that was never set.
+pub const APPLIED_KARGS_PATH: &str = "/var/lib/cluster/role-kargs.applied";

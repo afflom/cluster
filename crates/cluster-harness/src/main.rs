@@ -90,6 +90,11 @@ fn main() -> ExitCode {
             &fixture.firmware_code.display().to_string(),
             &fixture.firmware_vars.display().to_string(),
             None,
+            &fixture
+                .scratch
+                .join(format!("{}-console.log", node.name))
+                .display()
+                .to_string(),
         );
         println!("{}: qemu-system-x86_64 {}", node.name, args.join(" "));
         if tier == Tier::T1 {

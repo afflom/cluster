@@ -178,6 +178,7 @@ pub fn qemu_args(
     firmware_code: &str,
     firmware_vars: &str,
     bulk_disk: Option<&str>,
+    console: &str,
 ) -> Vec<String> {
     let mut args = vec![
         "-machine".to_string(),
@@ -191,8 +192,15 @@ pub fn qemu_args(
         "-nographic".to_string(),
         // Matches `console=ttyS1,115200` in the image kargs and the COM2/SOL
         // redirection the firmware table declares (§2.4, §8.1).
+        //
+        // To a **file**, not to stdio. The harness spawns QEMU with its stdout
+        // discarded, so `mon:stdio` sent every boot message to nowhere --- and a
+        // guest that booted and stopped short of `sshd` was indistinguishable
+        // from one that never started. The console is the only thing that says
+        // which, and a tier that cannot say why a boot failed is a tier that
+        // costs five minutes to learn nothing.
         "-serial".to_string(),
-        "mon:stdio".to_string(),
+        format!("file:{console}"),
         "-drive".to_string(),
         format!("if=pflash,format=raw,readonly=on,file={firmware_code}"),
         // A *writable* variable store, one per guest. Without it the firmware
@@ -417,7 +425,15 @@ mod tests {
         let c = cluster();
         let mut ssh_ports = Vec::new();
         for node in &c.nodes() {
-            let args = qemu_args(&c, node, "n.qcow2", "CODE.fd", "VARS.fd", None);
+            let args = qemu_args(
+                &c,
+                node,
+                "n.qcow2",
+                "CODE.fd",
+                "VARS.fd",
+                None,
+                "console.log",
+            );
             let line = args.join(" ");
             assert!(line.contains("pflash"), "OVMF supplies UEFI (§10.3)");
             assert!(
