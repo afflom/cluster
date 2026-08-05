@@ -199,7 +199,19 @@ impl Fixture {
     /// *which* piece is missing instead of printing a generic skip.
     pub fn missing(&self) -> Option<String> {
         if !Acceleration::probe().can_boot() {
-            return Some("/dev/kvm is absent".to_string());
+            // Which of the two it is. "Absent" was said of a device that was
+            // present and unusable, which is the same class of error as naming
+            // `/dev/kvm` when the firmware was what was missing: a reason that
+            // sends the reader somewhere there is nothing to find.
+            let kvm = std::path::Path::new("/dev/kvm");
+            return Some(if kvm.exists() {
+                "/dev/kvm is present and cannot be opened, so this machine cannot \
+                 accelerate a guest. Nested virtualisation is documented as \
+                 unsupported on hosted runners"
+                    .to_string()
+            } else {
+                "/dev/kvm is absent".to_string()
+            });
         }
         if !self.backing.exists() {
             return Some(format!("{} does not exist", self.backing.display()));
