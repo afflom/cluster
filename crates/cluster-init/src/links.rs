@@ -1,11 +1,17 @@
 //! Sorting a machine's ports into classes (`SPEC.md` §3.1).
 //!
-//! **Supported link modes, never negotiated speed.** A mesh port is down exactly
-//! when the peer it waits for has not booted yet, and a down port reports no
-//! speed at all --- `/sys/class/net/<if>/speed` returns `-1`. Classifying on that
-//! would put every unplugged 10GbE port in the LAN class on a cold fleet, which
-//! is precisely the boot this has to survive. Supported modes are a property of
-//! the card and are readable whether or not anything is plugged in.
+//! **Supported link modes first, negotiated speed only as a fallback.** A mesh
+//! port is down exactly when the peer it waits for has not booted yet, and a
+//! down port negotiates nothing --- `/sys/class/net/<if>/speed` returns `-1`.
+//! Classifying on that would put every unplugged 10GbE port in the LAN class on
+//! a cold fleet, which is precisely the boot this has to survive. Supported
+//! modes are a property of the card and are readable whether or not anything is
+//! plugged in.
+//!
+//! The fallback is for drivers with no PHY to describe. `virtio_net` reports
+//! `Supported link modes: Not reported`, so reading only supported modes found
+//! zero mesh ports on every guest and refused every simulated boot.
+//! [`max_supported_mbps`] states what that costs.
 //!
 //! The classification itself is pure and testable; reading the modes off a real
 //! card is the thin part around it. That split is deliberate: the interesting
@@ -93,11 +99,30 @@ pub fn classify(ports: &[Port], t: Thresholds) -> Result<Classified, InitError> 
     Ok(Classified { mesh, lan })
 }
 
-/// The highest supported speed in `ethtool`'s output for one interface.
+/// The highest speed `ethtool` reports a card is capable of.
 ///
 /// Parses the `Supported link modes:` block, whose entries look like
-/// `10000baseT/Full`. The negotiated `Speed:` line is deliberately not read ---
-/// see this module's header for why.
+/// `10000baseT/Full`, and falls back to the negotiated `Speed:` line **only when
+/// the driver reports no supported modes at all**.
+///
+/// The preference is the whole point of the module header: a mesh port is down
+/// exactly when the peer it waits for has not booted, and a down port negotiates
+/// nothing. Reading `Speed:` first would sort every unplugged 10GbE port into
+/// the LAN class on a cold fleet.
+///
+/// The fallback exists because some drivers have no PHY to describe. `virtio_net`
+/// reports `Supported link modes: Not reported` and a `Speed:` set by the
+/// hypervisor, so a classifier that read only supported modes found *zero* mesh
+/// ports on every guest --- `cluster-init` refused the boot, correctly by its own
+/// rule, and T1 spent six five-minute SSH timeouts saying `Connection refused`
+/// about a machine that was doing exactly what it was told.
+///
+/// What the fallback costs is stated rather than hidden: on a card that reports
+/// no capability, a *down* port reports nothing and classifies as nothing. That
+/// is the failure the preference exists to avoid, and it is unavoidable when the
+/// driver will not say what the card can do. It does not arise on the hardware
+/// §2.1 declares --- Intel X552 and i350 both report supported modes --- so the
+/// fallback is a property of the simulated tiers and not of the fleet.
 pub fn max_supported_mbps(ethtool_output: &str) -> u32 {
     let mut best = 0;
     let mut in_block = false;
@@ -123,6 +148,23 @@ pub fn max_supported_mbps(ethtool_output: &str) -> u32 {
             if let Ok(mbps) = digits.parse::<u32>() {
                 best = best.max(mbps);
             }
+        }
+    }
+    if best > 0 {
+        return best;
+    }
+
+    // No supported modes at all. The card will not say what it can do, so the
+    // only signal left is what it negotiated.
+    for line in ethtool_output.lines() {
+        let Some(value) = line.trim().strip_prefix("Speed:") else {
+            continue;
+        };
+        let Some(digits) = value.trim().strip_suffix("Mb/s") else {
+            continue;
+        };
+        if let Ok(mbps) = digits.parse::<u32>() {
+            best = best.max(mbps);
         }
     }
     best
@@ -227,11 +269,11 @@ Settings for eno1:
         assert_eq!(max_supported_mbps(out), 1000);
     }
 
-    /// The `Speed:` line must not leak into the answer. `Speed: 10000Mb/s`
-    /// contains no `base`, and a parser that fell back to it would defeat the
-    /// point of reading supported modes at all.
+    /// The `Speed:` line must not win when supported modes are present. This is
+    /// the preference the whole module rests on: a card that says it does 1G is
+    /// a LAN port whatever a hypervisor negotiated.
     #[test]
-    fn the_negotiated_speed_line_is_not_read() {
+    fn the_negotiated_speed_loses_to_supported_modes() {
         let out = "\
 Settings for eno1:
 	Supported link modes:   1000baseT/Full
@@ -242,5 +284,35 @@ Settings for eno1:
             1000,
             "the negotiated speed is not what the card supports"
         );
+    }
+
+    /// `virtio_net` has no PHY to describe. Without the fallback every guest
+    /// classifies zero mesh ports, `cluster-init` refuses the boot by its own
+    /// rule, and the tier reports `Connection refused` about a machine doing
+    /// exactly what it was told.
+    #[test]
+    fn a_driver_reporting_no_supported_modes_falls_back_to_negotiated_speed() {
+        let virtio = "\
+Settings for eth0:
+	Supported ports: [  ]
+	Supported link modes:   Not reported
+	Supports auto-negotiation: No
+	Speed: 10000Mb/s
+	Duplex: Full
+";
+        assert_eq!(max_supported_mbps(virtio), 10000);
+    }
+
+    /// And a card that reports neither is in no class, rather than defaulting
+    /// into one.
+    #[test]
+    fn a_card_that_reports_nothing_classifies_as_nothing() {
+        let silent = "\
+Settings for eth0:
+	Supported link modes:   Not reported
+	Speed: Unknown!
+	Link detected: no
+";
+        assert_eq!(max_supported_mbps(silent), 0);
     }
 }

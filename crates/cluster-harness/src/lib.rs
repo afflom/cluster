@@ -219,18 +219,45 @@ pub fn qemu_args(
         args.push(format!("file={path},format=qcow2,if=virtio"));
     }
 
+    // `speed=` and `duplex=` on every guest NIC, because that is the only thing
+    // `virtio_net` will tell `ethtool` about itself: it reports
+    // `Supported link modes: Not reported`, so §3.1's classifier falls back to
+    // the negotiated speed and this is what it reads. Without it a guest
+    // classifies zero mesh ports and cluster-init refuses the boot --- correctly
+    // by its own rule, and opaquely, as six SSH timeouts.
+    //
+    // The speeds come from the model's own class thresholds rather than from
+    // literals here: the harness must present a machine the classifier sorts the
+    // way the fleet's would, and a second copy of `10000` would be a second
+    // source for it.
+    let mesh_mbps = cluster
+        .network
+        .mesh_class()
+        .map(|c| c.min_speed_mbps)
+        .unwrap_or_default();
+    let lan_mbps = cluster
+        .network
+        .lan_class()
+        .map(|c| c.min_speed_mbps)
+        .unwrap_or_default();
+
     for netdev in mesh_netdevs(cluster, node) {
         args.push("-netdev".to_string());
         args.push(netdev.argument());
         args.push("-device".to_string());
-        args.push(format!("virtio-net-pci,netdev={}", netdev.id));
+        args.push(format!(
+            "virtio-net-pci,netdev={},speed={mesh_mbps},duplex=full",
+            netdev.id
+        ));
     }
 
     // Management and outbound, with no bridge, tap, or privilege.
     args.push("-netdev".to_string());
     args.push(format!("user,id=mgmt,hostfwd=tcp::{}-:22", ssh_port(node)));
     args.push("-device".to_string());
-    args.push("virtio-net-pci,netdev=mgmt".to_string());
+    args.push(format!(
+        "virtio-net-pci,netdev=mgmt,speed={lan_mbps},duplex=full"
+    ));
 
     args
 }

@@ -209,6 +209,27 @@ That is the second time in this repository a gate has looked green for a reason
 unrelated to what it claims to check, and both times the tell was the same: the
 failure message did not mention the thing being planted.
 
+**Three things had to be true before a guest could answer at all, and none of
+them had ever been exercised.** T1 had never run, so every step past "the disk
+exists" was unverified, and each one surfaced only when the one before it was
+fixed:
+
+1. `virtio_net` reports `Supported link modes: Not reported`. The classifier read
+   only supported modes, so every guest sorted **zero** mesh ports and
+   `cluster-init` refused the boot --- correctly by its own rule. It now falls
+   back to the negotiated speed when a driver reports no supported modes at all,
+   and `max_supported_mbps` states what that costs; the harness sets `speed=` on
+   the guest NICs from the model's own class thresholds.
+2. A bootc image locks root and installs no key. The tier authenticated as
+   `root@127.0.0.1` against a guest that could never accept it. The disk build
+   now makes an ephemeral key and installs its public half, and `Fixture::missing`
+   reports the absence of one as a reason the tier cannot run.
+3. `Connection refused` for five minutes says only that nothing is listening. It
+   is equally true of a QEMU that exited immediately, an image that panicked in
+   the initramfs, and a boot that failed a unit before `sshd`. The harness now
+   reports which: whether the process is still alive, and the arguments it was
+   started with.
+
 **T1 booted the one node that cannot boot alone, and a test passed over an
 empty loop while it did.** T1 took the first node in *rollout* order, which is
 the testbed --- a machine holding no bulk disk, and therefore one with no ordinal

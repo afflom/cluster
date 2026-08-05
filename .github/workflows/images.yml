@@ -131,6 +131,20 @@ jobs:
           set -euo pipefail
           mkdir -p target/harness
 
+          # An ephemeral key, and the public half installed for root in the disk.
+          #
+          # A bootc image has no user and no key: root is locked, so a guest built
+          # without this refuses every login and the tier reports `Connection
+          # refused` for five minutes per test about a machine that booted
+          # perfectly. The key opens one disk for one tier run and is thrown away
+          # with the runner --- it is not a secret this repository holds (§12.2).
+          ssh-keygen -t ed25519 -N '' -C 'cluster tier' -f target/harness/tier_key
+          cat > target/harness/bib.toml <<EOF
+          [[customizations.user]]
+          name = "root"
+          key = "$(cat target/harness/tier_key.pub)"
+          EOF
+
           # By digest, not by tag. §9.2: build once, validate *that digest*,
           # promote that digest --- a tag could have moved between the push and
           # here, and then the tier would validate something else.
@@ -151,7 +165,7 @@ jobs:
             -v ./target/harness:/output \
             -v /var/lib/containers/storage:/var/lib/containers/storage \
             quay.io/centos-bootc/bootc-image-builder:latest \
-            --type qcow2 "$image"
+            --type qcow2 --config /output/bib.toml "$image"
           sudo mv target/harness/qcow2/disk.qcow2 target/harness/base.qcow2
           sudo chown "$USER" target/harness/base.qcow2
 
@@ -216,6 +230,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target/harness
+
+          # The same ephemeral key the hosted tier uses, for the same reason: a
+          # bootc image locks root and installs no key, so a guest built without
+          # one refuses every login (§12.2).
+          ssh-keygen -t ed25519 -N '' -C 'cluster tier' -f target/harness/tier_key
+          cat > target/harness/bib.toml <<EOF
+          [[customizations.user]]
+          name = "root"
+          key = "$(cat target/harness/tier_key.pub)"
+          EOF
+
           image="ghcr.io/${{ github.repository }}/node@${{ needs.build.outputs.node }}"
           sudo podman login ghcr.io \
             -u '${{ github.actor }}' -p '${{ secrets.GITHUB_TOKEN }}'
@@ -225,7 +250,7 @@ jobs:
             -v ./target/harness:/output \
             -v /var/lib/containers/storage:/var/lib/containers/storage \
             quay.io/centos-bootc/bootc-image-builder:latest \
-            --type qcow2 "$image"
+            --type qcow2 --config /output/bib.toml "$image"
           sudo mv target/harness/qcow2/disk.qcow2 target/harness/base.qcow2
 
       - name: Build an unsigned image, for the claim that it is refused

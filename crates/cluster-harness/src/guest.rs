@@ -65,6 +65,9 @@ pub struct Guest {
     pub ssh_port: u16,
     /// Its overlay disk.
     pub disk: PathBuf,
+    /// The arguments it was started with, kept so that a boot that never
+    /// answers can say what was actually run.
+    command: Vec<String>,
     process: Option<Child>,
 }
 
@@ -81,6 +84,15 @@ pub struct Fixture {
     /// The firmware's variable-store template, copied per guest so each has a
     /// writable one.
     pub firmware_vars: PathBuf,
+    /// The private half of the key the tier authenticates with.
+    ///
+    /// Ephemeral and generated beside the disk, not a secret this repository
+    /// holds: the guest it opens exists for one tier run and is deleted after.
+    /// It has to exist *before* the disk is built, because the public half is
+    /// what the image builder installs for root --- an image built without it
+    /// has no way in at all, which is how T1 spent five minutes per test being
+    /// refused by a guest that had booted perfectly.
+    pub key: PathBuf,
 }
 
 /// Where a distribution puts OVMF, in the order they are tried.
@@ -150,6 +162,9 @@ impl Fixture {
                 .ok()
                 .or_else(|| discover_firmware().map(|(_, vars)| vars))
                 .unwrap_or_else(|| PathBuf::from("/usr/share/OVMF/OVMF_VARS_4M.fd")),
+            key: std::env::var("CLUSTER_TIER_KEY")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| at("target/harness/tier_key")),
         }
     }
 
@@ -163,6 +178,14 @@ impl Fixture {
         }
         if !self.backing.exists() {
             return Some(format!("{} does not exist", self.backing.display()));
+        }
+        if !self.key.exists() {
+            return Some(format!(
+                "{} does not exist, so nothing can log in to a guest. The public half is \
+                 installed for root when the disk is built, so the key has to be made \
+                 first",
+                self.key.display()
+            ));
         }
         for firmware in [&self.firmware_code, &self.firmware_vars] {
             if !firmware.exists() {
@@ -291,6 +314,7 @@ impl Guest {
         Ok(Self {
             node: node.name.clone(),
             ssh_port: ssh_port(node),
+            command: args,
             disk,
             process: Some(process),
         })
@@ -310,8 +334,43 @@ impl Guest {
         Err(GuestError {
             node: self.node.clone(),
             attempted: format!("wait {timeout_s}s for SSH"),
-            because: format!("the guest never answered; last attempt said: {last}"),
+            because: format!(
+                "the guest never answered; last attempt said: {last}. {}",
+                self.postmortem()
+            ),
         })
+    }
+
+    /// What is known about a guest that did not answer.
+    ///
+    /// `Connection refused` for five minutes says only that nothing is listening
+    /// on the forwarded port, which is equally true of a QEMU that exited
+    /// immediately, an image that panicked in the initramfs, and a boot that
+    /// failed a unit on the way to `sshd`. Six of those in a row taught nothing,
+    /// twice, so the harness now says which it was.
+    fn postmortem(&self) -> String {
+        let Some(process) = &self.process else {
+            return "no QEMU process was recorded for this guest".to_string();
+        };
+        // `try_wait` needs `&mut`, and this is reached from `&self` --- so the
+        // question is asked of the OS instead. A process that has exited leaves
+        // no entry under /proc, and a zombie is still an exit.
+        let alive = std::path::Path::new(&format!("/proc/{}", process.id())).exists();
+        if alive {
+            format!(
+                "QEMU (pid {}) is still running, so the guest booted and did not reach \
+                 sshd. Serial output is on the tier's stdout. Started with: qemu-system-x86_64 {}",
+                process.id(),
+                self.command.join(" ")
+            )
+        } else {
+            format!(
+                "QEMU (pid {}) is gone, so the guest never ran --- the arguments or the \
+                 disk are wrong rather than the image. Started with: qemu-system-x86_64 {}",
+                process.id(),
+                self.command.join(" ")
+            )
+        }
     }
 
     /// Run a command in the guest and return its stdout.
@@ -328,6 +387,13 @@ impl Guest {
                 "UserKnownHostsFile=/dev/null",
                 "-o",
                 "ConnectTimeout=5",
+                // Only this key. Without `IdentitiesOnly` ssh offers whatever
+                // the agent holds first, and a runner with several would spend
+                // the attempt budget before reaching the one that works.
+                "-o",
+                "IdentitiesOnly=yes",
+                "-i",
+                &Fixture::from_environment().key.display().to_string(),
                 "-o",
                 "LogLevel=ERROR",
                 "-p",
