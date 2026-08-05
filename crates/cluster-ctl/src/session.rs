@@ -381,7 +381,7 @@ mod tests {
             "main",
             ".devcontainer/devcontainer.json",
             "sha256:aaaa",
-            "n2",
+            "node2",
             SessionState::Running,
             0,
             last_attached_at,

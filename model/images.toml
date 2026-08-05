@@ -63,7 +63,7 @@ transparency_log = "https://rekor.sigstore.dev"
 # Where a node pulls from (§13.1, §14.2).
 #
 # The local registry first, then the fallbacks. Zot *will* be unreachable during
-# n1's own reboot --- by design --- and pulls continue over WAN rather than
+# the storage node's own reboot --- by design --- and pulls continue over WAN rather than
 # failing, which is what makes §14.2 a stated window rather than an outage.
 #
 # The host is derived from the node that runs the registry, never written here:
@@ -157,7 +157,7 @@ options = "ro,rslave"
 relabel = "z"
 
 # ---------------------------------------------------------------------------
-# n1 --- storage and CI (§8.4)
+# storage --- the registry, the object store, NFS, CI and the T2 host (§8.4)
 # ---------------------------------------------------------------------------
 
 [[variant]]
@@ -174,7 +174,7 @@ packages = [
 ]
 
 # cluster-ctl is a native unit, not a Quadlet: §16.1 calls it "an axum service
-# on n1", the binary is already in this image, and wrapping a binary the image
+# on the storage node", the binary is already in this image, and wrapping a binary the image
 # ships in a container that has to be pulled from a registry the same node hosts
 # is a start-up ordering problem invented for nothing.
 services = [
@@ -198,6 +198,39 @@ version = "0.19.1"
 url = "https://github.com/restic/restic/releases/download/v{version}/restic_{version}_linux_amd64.bz2"
 sha256 = "f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c"
 compression = "bz2"
+
+# The Actions runner (§9.5).
+#
+# Declared, rendered into units, and installed by nothing --- for long enough
+# that T2 and the Pages mirror both waited on a runner that could not start.
+# There were four independent reasons: no runner software in the image, a unit
+# invoking `runner-loop` when the rendered helper is `runner-loop-<role>`, the
+# units never enabled, and no path by which a credential could reach the node.
+#
+# Pinned and checksummed like restic, and for a sharper reason: this one
+# executes whatever a workflow tells it to, on a node holding the registry and
+# every devcontainer.
+#
+# `install_dir` rather than `/usr/bin`: the runner is a tree of scripts and
+# assemblies that resolve their own siblings, so there is no single file to
+# place. It is unpacked into /usr --- read-only at runtime --- and each runner
+# copies it into its own working directory, because `config.sh` writes its
+# registration beside itself.
+# The digest was measured by downloading the artifact and hashing it, and it
+# agrees with the one GitHub publishes in the release body. Two sources, because
+# a checksum nobody checked against the publisher is a checksum that only proves
+# the file did not change since whoever wrote it down.
+#
+# It costs about 216 MB in the image, and every machine carries it whether or not
+# it runs a job --- which is the one-image trade §21.14 already records for QEMU
+# and lvm2, at a larger number.
+[[variant.upstream]]
+name = "actions-runner"
+version = "2.336.0"
+url = "https://github.com/actions/runner/releases/download/v{version}/actions-runner-linux-x64-{version}.tar.gz"
+sha256 = "04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d"
+compression = "tar.gz"
+install_dir = "/usr/share/cluster-runner"
 
 [[variant.quadlet]]
 name = "zot"
@@ -315,7 +348,7 @@ labels = ["self-hosted", "linux", "x64", "cluster", "ci"]
 ephemeral = true
 
 # ---------------------------------------------------------------------------
-# n2 --- interactive compute (§8.4)
+# compute --- interactive devcontainers (§8.4)
 # ---------------------------------------------------------------------------
 
 [[variant]]
@@ -343,7 +376,7 @@ type = "nfs4"
 options = "hard,sec=sys,_netdev"
 
 # ---------------------------------------------------------------------------
-# n3 --- measurement (§8.4, §8.5)
+# testbed --- measurement (§8.4, §8.5)
 #
 # No NFS client, no Tailscale subnet routing, no migration receiver. NFS client
 # activity, RPC timers, and interrupt handling inject jitter into exactly the

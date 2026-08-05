@@ -6,11 +6,11 @@
 //! - **Wait.** A bench job and a CI job both run to completion. `--ephemeral`
 //!   runners exit after one job, so draining is a matter of not re-registering
 //!   rather than of killing work. Migrating a measurement invalidates it.
-//! - **Migrate.** Devcontainers move to `n1`, because a devcontainer's durable
+//! - **Migrate.** Devcontainers move to the storage node, because a devcontainer's durable
 //!   state is its worktree, its declared volumes, and the `devcontainer.json`
 //!   that built it --- not its process state.
 //! - **Cannot move.** The registry, object store, NFS and control plane are
-//!   bound to a disk physically inside `n1`. §14.2 states the window rather than
+//!   bound to a disk physically inside the storage node. §14.2 states the window rather than
 //!   pretending it away.
 //!
 //! # A budget is never met by force
@@ -47,7 +47,7 @@ pub enum WorkloadClass {
     CiJob,
     /// A devcontainer, which is the only thing that moves.
     Devcontainer,
-    /// Bound to `lv_data`, which is a disk physically inside `n1`.
+    /// Bound to `lv_data`, which is a disk physically inside the storage node.
     StorageService,
 }
 
@@ -134,7 +134,7 @@ pub struct Capacity {
     pub target: String,
     /// Nodes that receive no migrated workload under any circumstance.
     pub never_receives: Vec<String>,
-    /// `n1` has 4 cores and 32 GB and is already running the storage services
+    /// the storage node has 4 cores and 32 GB and is already running the storage services
     /// and two CI runners. Beyond this, the excess is stopped with notice.
     pub memory_cap_gib: u32,
 }
@@ -147,7 +147,7 @@ pub struct Capacity {
 pub fn plan(workloads: &[Workload], capacity: &Capacity) -> Plan {
     // Nothing migrates to a node that never receives work. Checked here rather
     // than trusted to the caller, because receiving work would void the
-    // isolation guarantee `n3` exists to provide, and a guarantee that depends
+    // isolation guarantee the testbed exists to provide, and a guarantee that depends
     // on nobody making a mistake is not one (§2.3, §14.1).
     let target_forbidden = capacity.never_receives.contains(&capacity.target);
 
@@ -351,8 +351,8 @@ mod tests {
 
     fn capacity() -> Capacity {
         Capacity {
-            target: "n1".to_string(),
-            never_receives: vec!["n3".to_string()],
+            target: "storage".to_string(),
+            never_receives: vec!["testbed".to_string()],
             memory_cap_gib: 12,
         }
     }
@@ -429,8 +429,8 @@ mod tests {
     #[test]
     fn nothing_migrates_to_a_reserved_node_cu_06() {
         let forbidden = Capacity {
-            target: "n3".to_string(),
-            never_receives: vec!["n3".to_string()],
+            target: "testbed".to_string(),
+            never_receives: vec!["testbed".to_string()],
             memory_cap_gib: 12,
         };
         let plan = plan(&[devcontainer("a", 1, 0)], &forbidden);

@@ -227,7 +227,7 @@ mod tests {
             "main",
             ".devcontainer/devcontainer.json",
             "sha256:aaaa",
-            "n2",
+            "node2",
             SessionState::Running,
             10,
             20,
@@ -266,9 +266,11 @@ mod tests {
     #[test]
     fn a_quarantine_is_persisted_cc_03() {
         let store = Store::in_memory().expect("schema");
-        store.quarantine("sha256:bad", "n3", 1_000).expect("write");
         store
-            .quarantine("sha256:bad", "n3", 1_100)
+            .quarantine("sha256:bad", "node3", 1_000)
+            .expect("write");
+        store
+            .quarantine("sha256:bad", "node3", 1_100)
             .expect("rewrite");
 
         let state = store.rollout_state().expect("read");

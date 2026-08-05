@@ -355,7 +355,7 @@ mod tests {
 
     fn predicate() -> Predicate {
         Predicate {
-            node: "n2".to_string(),
+            node: "node2".to_string(),
             expected_digest: "sha256:aaaa".to_string(),
             peers: vec!["10.10.255.1".to_string(), "10.10.255.3".to_string()],
             quadlets: vec!["devcontainer-agent.service".to_string()],

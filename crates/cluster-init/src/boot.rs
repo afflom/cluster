@@ -89,6 +89,23 @@ pub fn own_identity(env: &str) -> Result<(u32, String), InitError> {
     Ok((ordinal, role))
 }
 
+/// The names a machine takes once it knows its ordinal (§4.3).
+///
+/// Returns the static name for `/etc/hostname` and the short label the kernel
+/// carries. Both, because they are read by different things: DHCP offers the
+/// kernel's hostname when it registers a lease, and `/etc/hostname` is what
+/// survives a reboot.
+///
+/// Nothing set either. Every machine came up as whatever the installer left ---
+/// `localhost.localdomain` --- so a fleet of three was three machines with one
+/// name, none of which appeared in a DHCP lease table as anything an operator
+/// could pick out. The first thing §12.2 asks an operator to do is open the
+/// control plane in a browser, and finding it began with guessing.
+pub fn hostnames(fqdn: &str) -> (String, String) {
+    let short = fqdn.split_once('.').map_or(fqdn, |(head, _)| head);
+    (fqdn.to_string(), short.to_string())
+}
+
 /// Write a file only root can read, whether or not one is already there.
 ///
 /// `0600` is set *before* the content lands, because a file created
@@ -195,6 +212,33 @@ mod tests {
                 "{why}: {env:?} must be refused rather than defaulted"
             );
         }
+    }
+
+    /// A machine that knows its ordinal takes a name, and it is the model's.
+    ///
+    /// Nothing set one: a fleet of three came up as three machines called
+    /// `localhost.localdomain`, and finding the control plane on the LAN began
+    /// with guessing which lease was which.
+    #[test]
+    fn a_machine_takes_the_name_its_ordinal_derives() {
+        let (static_name, short) = hostnames("node1.devcluster");
+        assert_eq!(static_name, "node1.devcluster");
+        assert_eq!(
+            short, "node1",
+            "the kernel carries the label, not the domain"
+        );
+
+        // A name with no domain is its own short form rather than empty.
+        assert_eq!(
+            hostnames("node2"),
+            ("node2".to_string(), "node2".to_string())
+        );
+
+        // And the names come from the model's template, so a fleet with a
+        // different domain renames itself without a code change.
+        let (fqdn, short) = hostnames("node3.example");
+        assert_eq!(fqdn, "node3.example");
+        assert_eq!(short, "node3");
     }
 
     /// A file that was already there is narrowed too.

@@ -527,9 +527,9 @@ afflom/cluster
 │   └── cluster-harness/       QEMU orchestration; SSH assertions over an inventory
 │
 ├── xtask/
-├── images/{base,n1,n2,n3}/Containerfile
+├── images/node/Containerfile  the one image (§8.4)
 ├── generated/                 RENDERED from model/, committed, diff-gated
-├── bootstrap/{config.toml,kickstart.ks}
+├── bootstrap/config.toml      the installer configuration the ISO is built from
 ├── results/                   measurement output, committed
 └── .github/workflows/
     ci.yml  honesty.yml  images.yml  promote.yml  pages.yml  smoke.yml
@@ -826,8 +826,8 @@ QEMU socket netdevs give point-to-point links with no bridges, taps, or
 privilege:
 
 ```
-n1:  -netdev socket,id=l12,listen=:11200
-n2:  -netdev socket,id=l12,connect=127.0.0.1:11200
+ordinal 1:  -netdev socket,id=l12,listen=:11200
+ordinal 2:  -netdev socket,id=l12,connect=127.0.0.1:11200
 ```
 
 Three socket pairs reproduce the `/31` triangle; a user-mode netdev per guest
@@ -1212,10 +1212,10 @@ A devcontainer's durable state is the git worktree, its declared volumes, and th
 `devcontainer.json` that built it — **not** its process state.
 
 ```
-quiesce         stop accepting new starts on n2; notify attached sessions
-sync            rsync workspace → its NFS home on n1
+quiesce         stop accepting new starts on the compute node; notify attached sessions
+sync            rsync workspace → its NFS home on the storage node
 stop            podman stop, with the container's declared grace period
-recreate        start on n1 from the same image digest, workspace from NFS
+recreate        start on the storage node from the same image digest, workspace from NFS
 record          update the session's current host in cluster-ctl
 notify          attached clients are told to reconnect
 ```
@@ -1451,7 +1451,9 @@ because §14.2 already lists what stops working when the storage node cannot rea
 
 #### Exposure: Serve, not Funnel
 
-`tailscale serve` publishes `cluster-ctl` at `https://n1.<tailnet>.ts.net`, with
+`tailscale serve` publishes `cluster-ctl` at
+`https://<storage node's name>.<tailnet>.<magic_dns_suffix>` --- `node1.afflom.ts.net`
+as the model currently renders it --- with
 a real certificate from the tailnet's CA and no inbound port opened on the
 management plane.
 
@@ -1489,7 +1491,7 @@ URL, injected from a repository variable. All state comes from §16.1 at runtime
 
 **The same bundle is also served from the storage node.** `pages.yml` publishes to Pages and
 pushes the identical artifact to the control plane, which serves it at the origin
-the API is on. Pages stays canonical and stays the versioned artifact; the the storage node
+the API is on. Pages stays canonical and stays the versioned artifact; the storage node's
 copy is the path that always works, because same-origin has no CORS preflight and
 no browser policy standing between a page and the API it was built for.
 
@@ -2031,7 +2033,7 @@ Funnel (§16.2) changes what the UI can reach and therefore what its disconnecte
 state must say. Deciding it during the UI tranche would mean building the UI
 twice.
 
-**Step 12 ships the the storage node mirror with the Pages deployment, not after it.** §16.3
+**Step 12 ships the storage node's mirror with the Pages deployment, not after it.** §16.3
 makes the mirror the path that always works; a UI published to Pages alone,
 pending a mirror to follow, is a UI whose one guaranteed route does not exist
 yet.

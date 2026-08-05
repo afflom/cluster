@@ -205,6 +205,81 @@ eight variants in a list --- the three it missed were the three most recently
 added, which is exactly how a list-shaped exhaustiveness check fails. It is built
 from a `match` now, so a new variant is a compile error.
 
+## What a documentation pass found
+
+The task was to make the documentation complete enough to install a cluster from
+scratch. Writing it honestly meant establishing each step against the artifact
+rather than from memory, and four steps turned out not to work.
+
+**The CI runner could not start, for four independent reasons.** The model
+declared three runners, the renderer emitted a unit for each and a loop helper
+per role, and: the image installed no runner software, so `config.sh` was a path
+that did not exist; the units invoked `/usr/libexec/cluster/runner-loop` while
+the renderer emits `runner-loop-<role>`; the units were never enabled; and no
+credential had any path to a node. T2 and the browser client's node-served
+mirror both wait on those runners, and `promote.yml` refuses a commit whose T2
+was skipped --- so nothing could ever have been promoted either.
+
+All four are fixed, and the credential is enrolled rather than written by hand:
+what is entered is a token that can *mint* registration tokens, because a
+registration token expires in an hour and an ephemeral runner re-registers after
+every job. `CD-22` joins the five facts that have to agree, and `check_runners`
+refuses a model that declares a runner without one.
+
+**`check-wiring` could not see it.** Its rule was "every executable a rendered
+unit invokes is produced by the build, or lands inside a directory some `COPY`
+ships" --- and it tested the second half with a prefix match. `/usr/libexec/cluster/`
+is shipped, so `/usr/libexec/cluster/runner-loop` matched, and a
+directory-shaped answer was given to a file-shaped question. It now maps the
+path back to the rendered tree and asks whether that file is there.
+
+**The release path's ISO step passed a flag that does not exist.**
+`promote.yml` invoked bootc-image-builder with `--config /config/config.toml`.
+The builder has no `--config` flag; it reads `/config.toml`. Established by
+running the builder against a deliberately malformed configuration and reading
+the path out of its own error:
+
+```
+error: cannot generate manifest: cannot read config:
+cannot decode "/config.toml": toml: line 1: expected '.' or '=' ...
+```
+
+So the first promotion would have failed at the ISO step. `CL-05` covered that
+step and was satisfied by the presence of the string `/config/config.toml` ---
+the argument to the flag that does not work. It now asserts the mount and the
+absence of both `--config` and `--local`.
+
+**A first install had no path at all.** The ISO comes from `promote.yml`;
+promotion requires T2; T2 requires a self-hosted runner; the runner runs on the
+cluster being installed. `just installer` breaks the circle by building the ISO
+locally with the same substitution and the same builder.
+
+Three further inaccuracies, each of which the documentation would have had to
+describe: nothing set a machine's hostname, so a fleet of three appeared in a
+DHCP lease table as three machines called `localhost.localdomain`; the browser
+client's fallback API base named `n1.afflom.ts.net`, a machine name withdrawn
+when roles replaced it, and printed it on its own front page; and the agent's
+migration target defaulted to `n1` too.
+
+## Three assertions that could not fail
+
+Found while removing the withdrawn machine names, and each one green over
+content it never read.
+
+`CD-14`'s second half looped over `images/{base,n1,n2,n3}/Containerfile` --- four
+directories that stopped existing when three images became one --- so every
+iteration hit its `continue` and "no image build declares any of these a second
+time" checked nothing. It reads the directory now, and asserts it read
+something.
+
+`CD-11`'s placeholder check searched rendered files for `{n1.loopback}`,
+`{n2.loopback}` and `{n3.loopback}`. The placeholder syntax is
+`{node1.loopback}`, so it looked for three strings the renderer cannot emit and
+would have passed over a tree carrying a real unsubstituted placeholder. The
+names come from the model now.
+
+`CL-05`'s configuration assertion is the third, above.
+
 ## Every gate is falsifiable
 
 A gate nobody has seen fail is indistinguishable from a gate that cannot. Before
@@ -249,6 +324,11 @@ here.
 | `CG-05` | an unreadable answer treated as clean | yes |
 | `cluster-init` `write_private` | a mode set at creation and not narrowed on rewrite | yes, reading the mode back |
 | `env_number` | a malformed retention threshold silently taking the default | yes, naming the key |
+| `check-wiring` (R1) | a unit invoking a libexec helper nothing renders | yes, naming all three units and the missing file |
+| `CD-22` | a runner unit invoking the wrong helper, and one never enabled | yes |
+| `CL-05` | the `--config` flag bootc-image-builder does not have | yes |
+| `CD-14` | an image build declaring a setting the model already declares | yes, now that it reads the real directory |
+| `CC-08` | a fallback API base naming a host the model does not render | yes |
 
 **A second plant did not fire, and the reason is worth stating.** Breaking the
 installer escaper so that it stops escaping quotes leaves `CL-08` green. That is

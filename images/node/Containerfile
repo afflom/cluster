@@ -76,6 +76,35 @@ RUN curl --silent --show-error --fail --location \
  && rm -f /tmp/restic.bz2 \
  && restic version
 
+# The Actions runner (§9.5), pinned and checksummed for a sharper reason than
+# restic: this one executes whatever a workflow tells it to, on a node holding
+# the registry, the object store and every devcontainer.
+#
+# It was declared in the model and rendered into three units, and nothing
+# installed it --- so `config.sh` was a path that did not exist and no
+# self-hosted runner ever registered. T2 and the browser client's node-served
+# mirror both wait on those runners; both had waited since the units were
+# written. `check-images` now refuses a model that declares a runner without one.
+#
+# Unpacked into /usr rather than /usr/bin: it is a tree of scripts and
+# assemblies that resolve their own siblings. Each runner copies it into its own
+# directory under /var at first start, because `config.sh` writes its
+# registration beside itself and /usr is read-only at runtime (§5.2).
+#
+# `installdependencies.sh` pulls the ICU and OpenSSL libraries the .NET host
+# needs. Run at build time so a node never installs anything at run time.
+RUN curl --silent --show-error --fail --location \
+      "https://github.com/actions/runner/releases/download/v2.336.0/actions-runner-linux-x64-2.336.0.tar.gz" \
+      --output /tmp/actions-runner.tar.gz \
+ && echo "04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d  /tmp/actions-runner.tar.gz" \
+      | sha256sum --check --strict \
+ && mkdir -p /usr/share/cluster-runner \
+ && tar -xzf /tmp/actions-runner.tar.gz -C /usr/share/cluster-runner \
+ && rm -f /tmp/actions-runner.tar.gz \
+ && /usr/share/cluster-runner/bin/installdependencies.sh \
+ && dnf clean all \
+ && test -x /usr/share/cluster-runner/config.sh
+
 # ---------------------------------------------------------------------------
 # The binaries this repository builds (§10.1, §13, §16.1, §15.1, §2.3).
 # ---------------------------------------------------------------------------
@@ -203,6 +232,8 @@ RUN systemctl enable \
       nfs-server.service libvirtd.service lvm2-monitor.service \
       cluster-reclaim.timer tailscale-serve.service cluster-ctl.service \
       devcontainer-agent.service cluster-isolation.service \
+      cluster-runner-ci-1.service cluster-runner-ci-2.service \
+      cluster-runner-bench-1.service \
       remote-fs.target var-lib-devcontainer\\x2dhome.mount
 
 # `bootc container lint` is T0's first gate: it catches an image that is not a

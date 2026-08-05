@@ -136,7 +136,7 @@ pub fn admits(o: &Observation) -> Decision {
     }
 
     // §13.4: a node that rolled back POSTs the failed digest as quarantined, and
-    // quarantine is a precondition here so no other node attempts it. Because n3
+    // quarantine is a precondition here so no other node attempts it. Because the testbed
     // moves first, a bad image is normally caught by the node whose failure
     // costs least.
     if o.quarantined.iter().any(|d| d == &o.target) {
@@ -191,8 +191,8 @@ pub fn admits(o: &Observation) -> Decision {
         }
 
         // Predecessors must already be on the target. This is the ordering
-        // itself: n3 first, because a failure there costs a measurement window
-        // rather than the pipeline; n1 last, because it carries the machinery
+        // itself: the testbed first, because a failure there costs a measurement window
+        // rather than the pipeline; the storage node last, because it carries the machinery
         // needed to diagnose a bad update (§2.3).
         if peer.position < o.position {
             let on_target = peer.booted.as_deref() == Some(o.target.as_str());
@@ -245,7 +245,7 @@ mod tests {
     }
 
     /// The three nodes, with the positions the model declares (§2.3).
-    const FLEET: [(&str, u32); 3] = [("n3", 1), ("n2", 2), ("n1", 3)];
+    const FLEET: [(&str, u32); 3] = [("node3", 1), ("node2", 2), ("node1", 3)];
 
     /// Build the whole cluster's view from an assignment of digests, and ask
     /// each node what it would do.
@@ -324,7 +324,11 @@ mod tests {
             booted[at] = NEW;
         }
 
-        assert_eq!(order, vec!["n3", "n2", "n1"], "§2.3's update positions");
+        assert_eq!(
+            order,
+            vec!["node3", "node2", "node1"],
+            "§2.3's update positions"
+        );
         assert!(
             decisions(booted)
                 .iter()
@@ -336,7 +340,12 @@ mod tests {
     /// `CU-02`: a quarantined target is never applied.
     #[test]
     fn a_quarantined_target_is_never_applied_cu_02() {
-        let mut o = observation("n3", 1, OLD, vec![peer("n2", 2, OLD), peer("n1", 3, OLD)]);
+        let mut o = observation(
+            "node3",
+            1,
+            OLD,
+            vec![peer("node2", 2, OLD), peer("node1", 3, OLD)],
+        );
         assert!(admits(&o).applies(), "the control must be admitted");
 
         o.quarantined = vec![NEW.to_string()];
@@ -348,11 +357,16 @@ mod tests {
     /// `CU-03`: an unknown peer halts rather than proceeding.
     #[test]
     fn an_unknown_peer_halts_the_rollout_cu_03() {
-        let mut o = observation("n3", 1, OLD, vec![peer("n2", 2, OLD), peer("n1", 3, OLD)]);
+        let mut o = observation(
+            "node3",
+            1,
+            OLD,
+            vec![peer("node2", 2, OLD), peer("node1", 3, OLD)],
+        );
         assert!(admits(&o).applies());
 
         // Unreadable is not unhealthy, and neither is it healthy.
-        o.peers[0] = PeerReport::unknown("n2", 2);
+        o.peers[0] = PeerReport::unknown("node2", 2);
         let decision = admits(&o);
         assert!(decision.halts(), "{decision}");
         assert!(decision.to_string().contains("unknown"));
@@ -361,7 +375,7 @@ mod tests {
         // with a different reason (§13.5).
         o.peers[0] = PeerReport {
             healthy: Some(false),
-            ..peer("n2", 2, OLD)
+            ..peer("node2", 2, OLD)
         };
         let decision = admits(&o);
         assert!(decision.halts(), "{decision}");
@@ -372,7 +386,12 @@ mod tests {
     /// what keeps §18's rollout-stalled alert meaningful.
     #[test]
     fn a_peer_mid_flight_is_a_wait_not_a_halt_cu_01() {
-        let mut o = observation("n2", 2, OLD, vec![peer("n3", 1, NEW), peer("n1", 3, OLD)]);
+        let mut o = observation(
+            "node2",
+            2,
+            OLD,
+            vec![peer("node3", 1, NEW), peer("node1", 3, OLD)],
+        );
         assert!(admits(&o).applies());
 
         o.peers[0].state = Some(State::Updating);
@@ -389,13 +408,23 @@ mod tests {
     /// of every rollout before its turn.
     #[test]
     fn a_successor_need_not_be_on_the_target_cu_01() {
-        let o = observation("n3", 1, OLD, vec![peer("n2", 2, OLD), peer("n1", 3, OLD)]);
+        let o = observation(
+            "node3",
+            1,
+            OLD,
+            vec![peer("node2", 2, OLD), peer("node1", 3, OLD)],
+        );
         assert!(admits(&o).applies());
     }
 
     #[test]
     fn a_node_already_on_the_target_does_nothing_cu_01() {
-        let o = observation("n3", 1, NEW, vec![peer("n2", 2, OLD), peer("n1", 3, OLD)]);
+        let o = observation(
+            "node3",
+            1,
+            NEW,
+            vec![peer("node2", 2, OLD), peer("node1", 3, OLD)],
+        );
         assert_eq!(admits(&o), Decision::UpToDate);
     }
 }

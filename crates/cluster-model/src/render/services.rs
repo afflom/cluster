@@ -487,7 +487,7 @@ fn nfs_exports(c: &Cluster) -> Rendered {
     );
 
     // The node that mounts it, derived from the variant that declares the mount
-    // rather than named here: two places to write "n2" is one too many.
+    // rather than named here: two places to write "the compute node" is one too many.
     for variant in &c.images.variant {
         for mount in variant.mount.iter().filter(|m| m.fstype.starts_with("nfs")) {
             let consumer = c

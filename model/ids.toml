@@ -304,6 +304,18 @@ the value verbatim.
 """
 
 [[id]]
+id = "CD-22"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+A role that hosts an Actions runner has the runner installed by the image, a
+loop helper that is actually rendered, and an enrolled credential; the unit, the
+loop and the enrolment policy name the same destination for that credential, and
+a node given none of them skips its runners rather than failing them.
+"""
+
+[[id]]
 id = "CD-10"
 level = "build"
 suite = "definition"

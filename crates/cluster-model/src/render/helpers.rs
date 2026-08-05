@@ -77,6 +77,13 @@ fn runner_loop(c: &Cluster, role: &Role) -> Rendered {
         .variant_for(&role.id)
         .expect("the caller checked there is a variant");
     let concurrency = variant.runner.iter().filter_map(|r| r.concurrency).min();
+    // Across every variant, not this one's: there is one image and it carries
+    // the union of what the roles need (§8.4). The runner is declared once, on
+    // the variant that documents it, and both roles that host runners use it.
+    let install_dir = c
+        .images
+        .runner_install_dir()
+        .expect("check_images requires the runner to be declared where a role hosts one");
 
     let mut body = String::new();
     body.push_str(&format!(
@@ -91,15 +98,18 @@ fn runner_loop(c: &Cluster, role: &Role) -> Rendered {
         role.id
     ));
 
-    body.push_str(
-        "# RUNNER_NAME, RUNNER_LABELS and RUNNER_EPHEMERAL come from the unit;\n\
-         # RUNNER_TOKEN and RUNNER_URL from the environment file the installer\n\
-         # writes, so no token is ever in an image (§12.2).\n\
-         : \"${RUNNER_NAME:?the unit sets this}\"\n\
-         : \"${RUNNER_LABELS:?the unit sets this}\"\n\
-         : \"${RUNNER_URL:?/etc/cluster/runner.env sets this}\"\n\
-         : \"${RUNNER_TOKEN:?/etc/cluster/runner.env sets this}\"\n\n",
-    );
+    body.push_str(&format!(
+        "# RUNNER_NAME, RUNNER_LABELS and RUNNER_URL come from the unit, which is\n\
+         # rendered from the model. The credential is the one thing that is not:\n\
+         # it is enrolled through the browser after the cluster boots and lands\n\
+         # in a file only root can read, so no token is in an image, in this\n\
+         # repository, or in `systemctl show` (§12.2).\n\
+         : \"${{RUNNER_NAME:?the unit sets this}}\"\n\
+         : \"${{RUNNER_LABELS:?the unit sets this}}\"\n\
+         : \"${{RUNNER_URL:?the unit sets this}}\"\n\
+         pat=$(cat {pat})\n\n",
+        pat = crate::render::RUNNER_PAT
+    ));
 
     if let Some(limit) = concurrency {
         body.push_str(&format!(
@@ -115,20 +125,46 @@ fn runner_loop(c: &Cluster, role: &Role) -> Rendered {
     }
 
     body.push_str(&format!(
-        "work=/var/lib/cluster-runner/$RUNNER_NAME\n\
-         mkdir -p \"$work\"\n\
+        "# The runner's own copy. `config.sh` writes its registration beside\n\
+         # itself, and {install} is on the read-only system tree --- so each\n\
+         # runner works from a copy under /var, which the bootc filesystem\n\
+         # contract makes writable and persistent (§5.2).\n\
+         work=/var/lib/cluster-runner/$RUNNER_NAME\n\
+         if [ ! -x \"$work/config.sh\" ]; then\n  \
+           mkdir -p \"$work\"\n  \
+           /usr/bin/rsync --archive {install}/ \"$work/\"\n\
+         fi\n\
          cd \"$work\"\n\n\
+         # Mint a registration token, every time round.\n\
+         #\n\
+         # A registration token expires in an hour and an ephemeral runner\n\
+         # re-registers after every job, so a token written to a node once would\n\
+         # work until lunchtime and then stop, on a machine nobody is watching.\n\
+         # What is enrolled is a credential that can mint them; this is where it\n\
+         # is spent (§9.5, §12.2).\n\
+         token=$(/usr/bin/curl --silent --show-error --fail --max-time 30 \\\n  \
+           --request POST \\\n  \
+           --header \"authorization: Bearer $pat\" \\\n  \
+           --header \"accept: application/vnd.github+json\" \\\n  \
+           \"https://api.github.com/repos/{repo}/actions/runners/registration-token\" \\\n  \
+           | /usr/bin/jq -r .token)\n\
+         [ -n \"$token\" ] && [ \"$token\" != null ] || {{\n  \
+           echo \"runner: the enrolled credential could not mint a registration token\" >&2\n  \
+           exit 1\n\
+         }}\n\n\
          # A fresh registration each time. An ephemeral runner is removed by the\n\
          # service after its job, so the previous registration is already gone.\n\
          ./config.sh \\\n  \
            --url \"$RUNNER_URL\" \\\n  \
-           --token \"$RUNNER_TOKEN\" \\\n  \
+           --token \"$token\" \\\n  \
            --name \"$RUNNER_NAME\" \\\n  \
            --labels \"$RUNNER_LABELS\" \\\n  \
-           --unattended --replace{}\n\n\
+           --unattended --replace{ephemeral}\n\n\
          # Blocks until one job completes, then exits. The unit restarts us.\n\
          exec ./run.sh\n",
-        if variant.runner.iter().all(|r| r.ephemeral) {
+        install = install_dir,
+        repo = c.images.signing.repository,
+        ephemeral = if variant.runner.iter().all(|r| r.ephemeral) {
             " \\\n  --ephemeral"
         } else {
             ""
@@ -137,7 +173,7 @@ fn runner_loop(c: &Cluster, role: &Role) -> Rendered {
 
     Rendered::new(
         node_path(format!("libexec/runner-loop-{}", role.id)),
-        vec!["CD-12", "CW-02"],
+        vec!["CD-12", "CW-02", "CD-22"],
         body,
     )
 }

@@ -346,6 +346,23 @@ registry = "ghcr.io"
 enables = "pulling the images §13 applies unattended"
 
 [[secret]]
+id = "runner_registration_pat"
+description = "A GitHub token with administration:write on this repository"
+# Not a *registration* token. Those expire in an hour, and an ephemeral runner
+# re-registers after every job --- so a registration token written to a node
+# would work until lunchtime and then stop, on a machine nobody is watching.
+#
+# What is enrolled is a credential that can *mint* registration tokens, and the
+# runner loop mints a fresh one each time round. That is the difference between
+# a runner that works and one that worked once (§9.5).
+path = "/etc/cluster/runner.pat"
+mode = "0600"
+apply = "none"
+format = "raw"
+registry = ""
+enables = "the self-hosted runners, which are what T2 and the browser client's node-served mirror both wait on (§9.5, §16.3)"
+
+[[secret]]
 id = "tailnet_auth_key"
 description = "A Tailscale auth key, ephemeral and single-use"
 # Spent by the command that applies it and deliberately not kept: a key that has

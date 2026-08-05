@@ -96,6 +96,46 @@ _tier tier:
     [ "$code" -eq 0 ] || exit "$code"
     cargo test -p cluster-harness --test {{tier}} -- --test-threads=1 --nocapture
 
+# Build the installer ISO on this machine, from an image built on this machine.
+#
+# The release path (`promote.yml`) is the normal way to get one, and it is not
+# available for a *first* install: promotion refuses a commit whose T2 did not
+# run, T2 runs on a self-hosted runner, and that runner runs on the cluster
+# being installed. A first install cannot wait on a cluster that does not exist
+# yet, so this is the way in --- and it is the same substitution and the same
+# builder the release path uses, so what it produces is not a different artifact
+# in kind (SPEC.md §12.1).
+#
+# Needs podman and roughly 20 GB free. The ISO lands in `iso/`.
+installer:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release \
+      -p cluster-health -p cluster-updater -p cluster-ctl \
+      -p devcontainer-agent -p cluster-init
+    cp target/release/cluster-health target/release/cluster-updater .
+    cp target/release/cluster-ctl target/release/devcontainer-agent .
+    cp target/release/cluster-init .
+    podman build --platform linux/amd64 -t localhost/cluster-node:local \
+      -f images/node/Containerfile .
+    rm -f cluster-health cluster-updater cluster-ctl devcontainer-agent cluster-init
+    cargo run -q -p xtask -- installer-config --output iso/config.toml
+    # `/config.toml` is where the builder looks, and a locally built image is
+    # found through the mounted container storage. Neither `--config` nor
+    # `--local` is a flag it has.
+    sudo podman run --rm --privileged \
+      --security-opt label=type:unconfined_t \
+      -v ./iso:/output \
+      -v ./iso/config.toml:/config.toml:ro \
+      -v /var/lib/containers/storage:/var/lib/containers/storage \
+      quay.io/centos-bootc/bootc-image-builder:latest \
+      --type anaconda-iso \
+      localhost/cluster-node:local
+    sudo mv iso/bootiso/install.iso iso/node.iso
+    sudo chown -R "$USER" iso
+    ( cd iso && sha256sum node.iso > SHA256SUMS )
+    echo "installer: iso/node.iso --- verify iso/SHA256SUMS before mounting it"
+
 # R6: nothing shipped depends on a dev-only crate, no wildcard version
 # requirement, no advisory against anything in the tree. Needs
 # `cargo install cargo-deny`, which is why it is not in `just vv`.

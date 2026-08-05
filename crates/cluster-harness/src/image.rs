@@ -121,8 +121,8 @@ pub fn base_references(file: &Containerfile) -> Vec<BaseReference> {
 
 /// Which rendered node tree a Containerfile copies in.
 ///
-/// A variant that copied another node's tree would ship `n2`'s addresses on
-/// `n3` --- a mis-wired node that boots, passes a syntax check, and is wrong.
+/// A variant that copied another node's tree would ship the compute node's addresses on
+/// the testbed --- a mis-wired node that boots, passes a syntax check, and is wrong.
 /// The `${NODE}` form is the base's, which is parameterised because §8.1 puts
 /// the rendered networkd and hosts files in the base.
 pub fn copied_trees(file: &Containerfile) -> BTreeSet<String> {

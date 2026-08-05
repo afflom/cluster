@@ -4,9 +4,10 @@
 //! Quarantine is a precondition in §13.2's ordering predicate, so recording one
 //! is what stops the rollout rather than merely reporting on it.
 //!
-//! Because `n3` moves first, a bad image is normally caught by the node whose
-//! failure costs least, and `n2` and `n1` never see it. The exception is worth
-//! naming and is not smoothed over here: if `n1` --- last in the sequence ---
+//! Because the testbed moves first, a bad image is normally caught by the node
+//! whose failure costs least, and the compute and storage nodes never see it. The
+//! exception is worth naming and is not smoothed over here: if the storage node
+//! --- last in the sequence ---
 //! fails and rolls back, the cluster is left split-version. That is a
 //! legitimate, alerted state requiring a human decision, and nothing in this
 //! module reconciles it silently.
@@ -78,18 +79,18 @@ mod tests {
         let mut state = RolloutState::default();
         assert!(!state.is_quarantined("sha256:bad"));
 
-        state.quarantine("sha256:bad", "n3", 1_000);
+        state.quarantine("sha256:bad", "node3", 1_000);
         assert!(state.is_quarantined("sha256:bad"));
         assert!(!state.is_quarantined("sha256:good"));
 
         // greenboot may roll back more than once before an operator arrives, and
         // a duplicate POST must not be a failure a node handles mid-reboot.
-        state.quarantine("sha256:bad", "n3", 1_100);
+        state.quarantine("sha256:bad", "node3", 1_100);
         assert_eq!(state.quarantined.len(), 1);
 
         // A second node reporting the same digest is a distinct fact worth
         // keeping: it says the image is bad on more than one machine.
-        state.quarantine("sha256:bad", "n2", 1_200);
+        state.quarantine("sha256:bad", "node2", 1_200);
         assert_eq!(state.quarantined.len(), 2);
     }
 
@@ -105,16 +106,16 @@ mod tests {
             ..RolloutState::default()
         };
 
-        // n1 behind its peers: the state §13.4 leaves behind when the last node
+        // The storage node behind its peers: the state §13.4 leaves behind when the last node
         // in the sequence rolls back, and refuses to reconcile silently.
         assert!(booted(&[
-            ("n1", "sha256:old"),
-            ("n2", "sha256:new"),
-            ("n3", "sha256:new"),
+            ("node1", "sha256:old"),
+            ("node2", "sha256:new"),
+            ("node3", "sha256:new"),
         ])
         .is_split_version());
 
-        assert!(!booted(&[("n1", "sha256:new"), ("n2", "sha256:new")]).is_split_version());
+        assert!(!booted(&[("node1", "sha256:new"), ("node2", "sha256:new")]).is_split_version());
 
         assert!(!RolloutState::default().is_split_version());
     }

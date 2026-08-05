@@ -93,6 +93,7 @@ fi
 #
 #   ssh_authorized_key --- The operator's SSH public key, enabling SSH, which §16.5 keeps as the way back in when the control plane is the thing that is wrong
 #   registry_pull_token --- A GHCR token with read:packages and nothing else, enabling pulling the images §13 applies unattended
+#   runner_registration_pat --- A GitHub token with administration:write on this repository, enabling the self-hosted runners, which are what T2 and the browser client's node-served mirror both wait on (§9.5, §16.3)
 #   tailnet_auth_key --- A Tailscale auth key, ephemeral and single-use, enabling off-LAN access, and the tailnet the control plane is published on (§4.5, §16.2)
 # The node is not considered provisioned until the predicate passes (§12.1).
 %post --erroronfail --nochroot

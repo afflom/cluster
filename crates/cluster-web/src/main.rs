@@ -7,7 +7,7 @@
 //!
 //! # The disconnected state is a feature
 //!
-//! When the API is unreachable --- the browser is not on the tailnet, or `n1` is
+//! When the API is unreachable --- the browser is not on the tailnet, or the storage node is
 //! rebooting during its own update window (§14.2) --- the UI renders an explicit
 //! disconnected state **naming which of the two it cannot distinguish**, rather
 //! than an empty list that looks like "you have no devcontainers".
@@ -57,7 +57,7 @@ impl<T> Connection<T> {
     /// ambiguity.
     pub const UNREACHABLE_MESSAGE: &'static str = concat!(
         "The control plane is not answering. Either this browser is not on the ",
-        "tailnet, or n1 is rebooting during its own update window --- from here ",
+        "tailnet, or the storage node is rebooting during its own update window --- from here ",
         "those look the same. Devcontainers already running are unaffected, and ",
         "`ssh dc-<id>` still works against the last known host."
     );
@@ -117,9 +117,20 @@ pub fn session_url(template: &str, name_prefix: &str, session: &str, folder: &st
 /// carrying a stale copy of the cluster's shape.
 pub fn api_base() -> String {
     option_env!("CLUSTER_API_BASE")
-        .unwrap_or("https://n1.afflom.ts.net")
+        .unwrap_or(DEFAULT_API_BASE)
         .to_string()
 }
+
+/// Where the page looks when the repository variable is unset.
+///
+/// It named `n1.afflom.ts.net`, a machine name withdrawn when roles replaced it
+/// (§2.3) --- so a bundle built without `CLUSTER_API_BASE` pointed at a host the
+/// model does not render, and said so on its own front page.
+///
+/// A constant rather than a value read from the model: this crate compiles to
+/// wasm32 and has no filesystem to read `model/` from. It is checked against the
+/// model by a test instead, which is the same guarantee arriving a different way.
+pub const DEFAULT_API_BASE: &str = "https://node1.afflom.ts.net";
 
 /// How a session's lifecycle state is shown.
 ///
@@ -335,7 +346,7 @@ mod tests {
         // No node name can appear, because none is an input. This is the
         // assertion that would fail if somebody "helpfully" added a host
         // parameter to make the URL more specific.
-        for node in ["n1", "n2", "n3"] {
+        for node in ["node1", "node2", "node3"] {
             assert!(!url.contains(node), "{node} leaked into the session URL");
         }
     }
@@ -426,5 +437,54 @@ mod enrolment_tests {
         assert!(json.contains("registry_pull_token"));
         assert!(json.contains("\"present\":true"));
         assert!(!json.contains("value"), "{json}");
+    }
+}
+
+#[cfg(test)]
+mod api_base_tests {
+    use super::*;
+
+    /// `CC-08`: the fallback names the node the model actually renders.
+    ///
+    /// It named `n1.afflom.ts.net`, a machine name withdrawn when roles replaced
+    /// it (§2.3). A bundle built without `CLUSTER_API_BASE` pointed at a host
+    /// nothing resolves, and printed that address on its own front page as
+    /// though it were where the cluster lived.
+    ///
+    /// Checked against the model rather than against a second constant, because
+    /// two constants is the drift this exists to catch.
+    #[test]
+    fn the_fallback_api_base_is_a_host_the_model_renders_cc_08() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("crates/cluster-web is two below the root")
+            .to_path_buf();
+        let c = cluster_model::Cluster::load(&root.join("model")).expect("the model loads");
+
+        // Where the control plane is published: the node holding the migration
+        // target's role, at its tailnet name (§16.2).
+        let storage = c
+            .node_with_role(&c.policy.drain.migration_target)
+            .expect("the model check requires the migration target to be a role");
+        let short = storage
+            .name
+            .split_once('.')
+            .map_or(storage.name.as_str(), |(head, _)| head);
+        let expected = format!(
+            "https://{short}.{}.{}",
+            c.cluster.tailnet, c.cluster.magic_dns_suffix
+        );
+
+        assert_eq!(
+            DEFAULT_API_BASE, expected,
+            "the page's fallback and the model disagree about where the control \
+             plane is published"
+        );
+        // And the withdrawn name is gone for good.
+        assert!(
+            !DEFAULT_API_BASE.contains("//n1."),
+            "`n1` is a machine name this model no longer renders (§2.3)"
+        );
     }
 }

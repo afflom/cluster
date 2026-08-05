@@ -200,8 +200,8 @@ pub fn render_all(c: &Cluster) -> Vec<Rendered> {
 
 /// Where the one node tree lives under `generated/`.
 ///
-/// One directory, not one per node. There was a `generated/n1/`, `n2/` and
-/// `n3/` when there were three images; there is one image now (§8.4), so there
+/// One directory, not one per node. There was a `generated/the storage node/`, `the compute node/` and
+/// `the testbed/` when there were three images; there is one image now (§8.4), so there
 /// is one tree, and every file in it is byte-identical on all three machines.
 ///
 /// The handful of artifacts that genuinely differ per machine --- the `.network`
@@ -209,6 +209,14 @@ pub fn render_all(c: &Cluster) -> Vec<Rendered> {
 /// an ordinal the image does not know, and `cluster-init` writes them at boot
 /// (§3.3, §4.3). What is rendered is the *policy* they are written from.
 pub const NODE_DIR: &str = "node";
+
+/// Where the enrolled runner credential lands (§9.5, §12.2).
+///
+/// Named here because two renderers need it and must agree: the unit gates on
+/// its existence, so an unenrolled cluster skips its runners rather than failing
+/// them, and the loop reads it. It is `model/policy.toml`'s `[[secret]]` path,
+/// and `CD-22` asserts the three agree.
+pub const RUNNER_PAT: &str = "/etc/cluster/runner.pat";
 
 /// A path under the node tree.
 pub(crate) fn node_path(rest: impl std::fmt::Display) -> String {

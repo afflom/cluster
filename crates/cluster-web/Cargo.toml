@@ -27,5 +27,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 leptos = { version = "0.8", features = ["csr"] }
 
+# The model, so the fallback API base can be checked against what the model
+# actually renders rather than against itself. A dev dependency only: this crate
+# compiles to wasm32 and has no filesystem to read `model/` from, but its tests
+# run on the host, where there is one.
+[dev-dependencies]
+cluster-model = { workspace = true }
+
 [lints]
 workspace = true

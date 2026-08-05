@@ -77,6 +77,11 @@ fn for_role(c: &Cluster, role: &Role) -> Vec<Rendered> {
         unit.push("After=network-online.target".to_string());
         unit.push("Wants=network-online.target".to_string());
         unit.push(format!("ConditionPathExists={}", role_marker(&role.id)));
+        // And on the credential existing. An unenrolled cluster *skips* its
+        // runners rather than failing them, which is what keeps §10.1's "no
+        // failed units" honest on a node that has simply not been given its
+        // secrets yet (§12.2).
+        unit.push(format!("ConditionPathExists={}", crate::render::RUNNER_PAT));
         body.push_str(&section("Unit", &unit));
 
         let mut service = vec![
@@ -84,8 +89,19 @@ fn for_role(c: &Cluster, role: &Role) -> Vec<Rendered> {
             format!("Environment=RUNNER_NAME={}", runner.name),
             format!("Environment=RUNNER_LABELS={}", runner.labels.join(",")),
             format!("Environment=RUNNER_EPHEMERAL={}", runner.ephemeral),
-            "EnvironmentFile=/etc/cluster/runner.env".to_string(),
-            "ExecStart=/usr/libexec/cluster/runner-loop".to_string(),
+            // The repository the runner registers against is a model fact, not
+            // a secret: it is this repository's own URL. Only the credential is
+            // enrolled, and it is read from its file by the loop rather than
+            // passed through the environment, where it would be readable in
+            // `systemctl show` to any local user.
+            format!(
+                "Environment=RUNNER_URL=https://github.com/{}",
+                c.images.signing.repository
+            ),
+            // Named for the role. It was `runner-loop`, and the renderer emits
+            // `runner-loop-<role>` --- so every runner unit invoked a path that
+            // did not exist, and no self-hosted runner has ever registered.
+            format!("ExecStart=/usr/libexec/cluster/runner-loop-{}", role.id),
             "Restart=always".to_string(),
             "RestartSec=15".to_string(),
         ];
@@ -103,13 +119,13 @@ fn for_role(c: &Cluster, role: &Role) -> Vec<Rendered> {
 
         out.push(Rendered::new(
             node_path(format!("systemd/cluster-runner-{}.service", runner.name)),
-            vec!["CD-05"],
+            vec!["CD-05", "CD-22"],
             body,
         ));
     }
 
     // Network filesystem mounts, as `.mount` units named for their mount point.
-    // Hard mounts stall and recover cleanly across `n1`'s reboot, which is what
+    // Hard mounts stall and recover cleanly across the storage node's reboot, which is what
     // §14.2 relies on; a soft mount would return errors to a devcontainer
     // mid-write instead.
     for mount in &variant.mount {

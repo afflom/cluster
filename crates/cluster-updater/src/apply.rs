@@ -5,7 +5,7 @@
 //! # Resolution order
 //!
 //! Local Zot first, GHCR on failure --- and it *will* fail, by design, during
-//! `n1`'s own reboot (§14.2). Registries are tried in the order the model
+//! the storage node's own reboot (§14.2). Registries are tried in the order the model
 //! renders, and a node that cannot reach any of them reports a
 //! [`crate::RolloutError`] rather than inventing an answer: an unresolved target
 //! is not "no update available", and treating it as one would silently pin a

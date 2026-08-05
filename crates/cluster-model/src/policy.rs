@@ -117,7 +117,7 @@ pub struct Rollout {
     /// Where `cluster-health` is served on the mesh loopback (§10.1).
     pub peer_health_port: u16,
     /// Registry order: local Zot first, GHCR on failure --- which it is, by
-    /// design, during `n1`'s own reboot (§5.4).
+    /// design, during the storage node's own reboot (§5.4).
     pub registries: Vec<String>,
     /// Where the node images live.
     pub image_repository: String,
@@ -167,7 +167,7 @@ pub struct Drain {
     /// The only node that can receive devcontainers (§1.1).
     pub migration_target: String,
     /// Nodes that receive no migrated workload under any circumstance.
-    /// Receiving work would void the isolation guarantee `n3` exists to
+    /// Receiving work would void the isolation guarantee the testbed exists to
     /// provide (§2.3).
     pub never_receives: Vec<String>,
     /// The grace period a container is stopped with.
@@ -240,7 +240,7 @@ pub struct Auth {
     pub token_cache_ttl_s: u64,
     /// How long a call to the identity provider may take before giving up. A
     /// control plane blocking on a slow validation would make an unreachable
-    /// GitHub look like an unreachable `n1`.
+    /// GitHub look like an unreachable the storage node.
     pub validation_timeout_s: u64,
     /// The exact origin the Pages copy is served from.
     ///

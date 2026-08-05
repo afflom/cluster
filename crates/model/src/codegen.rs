@@ -70,6 +70,40 @@ pub fn render_conformance(model: &Model) -> String {
     suites.sort_unstable();
     suites.dedup();
 
+    // A summary, generated, because it is the thing a reader wants first and the
+    // thing most likely to go stale. `README.md` used to carry its own copy ---
+    // "61 claims across twelve classes" over a table of per-suite counts --- and
+    // every number in it was wrong within a few commits. A count in two places
+    // is two sources for it, which is the rule this whole file exists to keep.
+    let _ = writeln!(w);
+    let _ = writeln!(w, "## Summary");
+    let _ = writeln!(w);
+    let _ = writeln!(
+        w,
+        "{} claims across {} suites, each discharged at exactly one tier.",
+        model.ids.id.len(),
+        suites.len()
+    );
+    let _ = writeln!(w);
+    let _ = writeln!(w, "| Suite | Claims | Tiers |");
+    let _ = writeln!(w, "| --- | --- | --- |");
+    for suite in &suites {
+        let rows: Vec<_> = model.ids.id.iter().filter(|r| &r.suite == suite).collect();
+        let mut tiers: Vec<&str> = rows.iter().map(|r| r.tier.as_str()).collect();
+        tiers.sort_unstable();
+        tiers.dedup();
+        let _ = writeln!(
+            w,
+            "| `{suite}` | {} | {} |",
+            rows.len(),
+            tiers
+                .iter()
+                .map(|t| format!("`{t}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
     for suite in suites {
         let rows: Vec<_> = model.ids.id.iter().filter(|r| r.suite == suite).collect();
         if rows.is_empty() {

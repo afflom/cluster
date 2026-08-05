@@ -1,6 +1,6 @@
 //! The HTTP surface (`SPEC.md` §16.1).
 //!
-//! An axum service on `n1`, published by `tailscale serve` with a real
+//! An axum service on the storage node, published by `tailscale serve` with a real
 //! certificate from the tailnet's CA and no inbound port opened on the
 //! management plane (§16.2).
 //!
@@ -256,7 +256,7 @@ fn caller(headers: &HeaderMap, api: &Api) -> Result<String, ApiError> {
 /// A poisoned mutex means a handler panicked while holding it. Reported as
 /// `StoreUnavailable` rather than propagated, because from a caller's side the
 /// store is exactly what is unavailable --- and a panic here must not take the
-/// whole control plane down while `n1` is the only node that has one.
+/// whole control plane down while the storage node is the only one that has it.
 fn locked<'a>(api: &'a Api, attempted: &str) -> Result<std::sync::MutexGuard<'a, Store>, ApiError> {
     api.store.lock().map_err(|_| ApiError::StoreUnavailable {
         attempted: attempted.to_string(),
@@ -860,7 +860,7 @@ mod tests {
             "main",
             ".devcontainer/devcontainer.json",
             "sha256:aaaa",
-            "n1",
+            "node1",
             SessionState::Running,
             0,
             0,
@@ -875,8 +875,8 @@ mod tests {
         // The alias does not carry the host: that is what makes it survive a
         // migration. The host is a separate field the ProxyCommand resolves.
         assert_eq!(connection.ssh, "ssh dc-abc123");
-        assert_eq!(connection.host, "n1");
-        assert!(!connection.ssh.contains("n1"));
+        assert_eq!(connection.host, "node1");
+        assert!(!connection.ssh.contains("node1"));
     }
 
     /// An unreadable workspace is dirty. The only safe reading: an extra held

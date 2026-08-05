@@ -1,7 +1,7 @@
 //! T2: three nodes, mesh wired, failover, cross-node features, and a full
 //! simulated rollout with drain and rollback (`SPEC.md` §10.2).
 //!
-//! Not run by `cargo test`. `just t2` runs it, on `n1`, where KVM is guaranteed
+//! Not run by `cargo test`. `just t2` runs it, on the storage node, where KVM is guaranteed
 //! --- which is why this tier *requires* a bootable fixture rather than skipping
 //! politely. On the machine T2 is supposed to run on, a missing `/dev/kvm` means
 //! the node is broken, and treating that as a skip would let a broken CI host

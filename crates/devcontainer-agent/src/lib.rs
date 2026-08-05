@@ -351,7 +351,7 @@ mod tests {
             session: "abc123".to_string(),
             workspace: PathBuf::from("/var/lib/devcontainers/abc123"),
             home: "/var/lib/devcontainer-home".to_string(),
-            target: "n1".to_string(),
+            target: "node1".to_string(),
             image_digest: "sha256:aaaa".to_string(),
             grace_s: 30,
         }

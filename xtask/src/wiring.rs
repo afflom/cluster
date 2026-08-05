@@ -49,6 +49,9 @@ const FROM_PACKAGES: &[&str] = &[
     "/usr/sbin/nft",
     "/usr/bin/install",
     "/usr/bin/ostree",
+    // From the vendor repository `model/images.toml` declares, because EL10
+    // does not carry it.
+    "/usr/bin/tailscale",
 ];
 
 /// Run every wiring check.
@@ -132,13 +135,17 @@ fn every_rendered_file_is_consumed(root: &Path, cluster: &Cluster) -> Result<Vec
     Ok(problems)
 }
 
-/// Every directory a `COPY` writes into, across the image builds.
+/// The file in the repository that a shipped path would have come from.
 ///
-/// Only directories: a copy to a file path produces that file and nothing else,
-/// and treating `/etc/exports` as a prefix would make every path beginning with
-/// it look produced.
-fn copy_destinations(files: &[(String, String)]) -> Vec<String> {
-    let mut out = Vec::new();
+/// `COPY generated/node/libexec/ /usr/libexec/cluster/` maps
+/// `/usr/libexec/cluster/runner-loop-storage` back to
+/// `generated/node/libexec/runner-loop-storage`. `None` when no `COPY` ships a
+/// directory the path is under.
+///
+/// The mapping is what makes the check about the *file*. Asking only whether
+/// some `COPY` ships an enclosing directory answers a different question, and
+/// answering it let three units invoke a helper that was never rendered.
+fn shipped_source(root: &Path, files: &[(String, String)], path: &str) -> Option<PathBuf> {
     for (_, text) in files {
         for line in text.lines().map(str::trim) {
             if line.starts_with('#') {
@@ -147,14 +154,19 @@ fn copy_destinations(files: &[(String, String)]) -> Vec<String> {
             let Some(rest) = line.strip_prefix("COPY ") else {
                 continue;
             };
-            if let Some(destination) = rest.split_whitespace().last() {
-                if destination.ends_with('/') {
-                    out.push(destination.to_string());
-                }
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            let [source, destination] = parts.as_slice() else {
+                continue;
+            };
+            if !destination.ends_with('/') || !source.starts_with(GENERATED_DIR) {
+                continue;
+            }
+            if let Some(rest) = path.strip_prefix(destination) {
+                return Some(root.join(source.trim_end_matches('/')).join(rest));
             }
         }
     }
-    out
+    None
 }
 
 /// Every `COPY generated/...` source across the image builds.
@@ -334,17 +346,35 @@ fn every_invoked_path_is_produced(root: &Path) -> Result<Vec<String>, Fail> {
         if FROM_PACKAGES.contains(&path.as_str()) {
             continue;
         }
-        // Produced by an image build: named outright, or landing inside a
-        // directory some COPY ships. `COPY generated/n1/libexec/
-        // /usr/libexec/cluster/` produces every helper beneath it, and a check
-        // that only looked for the literal path would demand each be named.
+        // Produced by an image build: named outright in a Containerfile.
         if build_text.contains(&path) {
             continue;
         }
-        let shipped_into = copy_destinations(&files)
-            .into_iter()
-            .any(|destination| path.starts_with(&destination));
-        if shipped_into {
+        // Or landing inside a directory some `COPY` ships --- but only if the
+        // file is actually *in* that directory.
+        //
+        // This used to accept any path under a shipped destination, which is a
+        // statement about the directory and not about the file. Three runner
+        // units invoked `/usr/libexec/cluster/runner-loop`; the renderer emits
+        // `runner-loop-<role>`; `/usr/libexec/cluster/` is shipped, so the
+        // prefix matched and the gate passed. Every runner unit invoked a path
+        // that did not exist, no self-hosted runner ever registered, and T2 and
+        // the node-served mirror both waited on them.
+        //
+        // A directory-shaped answer to a file-shaped question. It now resolves
+        // the path back to the rendered tree and asks whether that file is
+        // there.
+        if let Some(source) = shipped_source(root, &files, &path) {
+            if source.exists() {
+                continue;
+            }
+            problems.push(format!(
+                "{path}: invoked by {}, and the build ships the directory it would be \
+                 in --- but {} is not rendered. A prefix match answers a question about \
+                 the directory; this one is about the file (§7.2)",
+                sources.iter().cloned().collect::<Vec<_>>().join(", "),
+                source.strip_prefix(root).unwrap_or(&source).display()
+            ));
             continue;
         }
         problems.push(format!(

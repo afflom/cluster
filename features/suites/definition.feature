@@ -177,3 +177,13 @@ Feature: definition
     And the username in it is the login the device flow authenticated
     And a value carrying JSON punctuation still produces a document that parses
     And a secret declared raw is written verbatim, because its destination reads that
+
+  @CD-22 @build
+  Scenario: A role that hosts a runner can actually run one
+    Given a role declaring an Actions runner
+    When the image, the unit and the loop are read together
+    Then the image installs the runner the model pins, verified by its digest
+    And the unit invokes a loop helper that is rendered rather than one that is not
+    And the unit, the loop and the enrolment policy name one destination for the credential
+    And the unit is enabled, so it is started rather than merely shipped
+    And a node given no credential skips its runners rather than failing them

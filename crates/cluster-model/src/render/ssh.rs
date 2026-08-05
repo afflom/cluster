@@ -1,7 +1,7 @@
 //! `ssh_config`, including the devcontainer alias (`SPEC.md` §11.1, §16.5).
 //!
 //! The `dc-<id>` alias resolves the session's *current* host from the control
-//! plane, so a session that migrated during `n2`'s update (§14.3) is reachable
+//! plane, so a session that migrated during the compute node's update (§14.3) is reachable
 //! at the same alias without the client knowing it moved. Attached editor
 //! sessions still drop --- there is no way around that short of CRIU, which is
 //! not reliable for VS Code server, open TTYs and live SSH sockets --- but
@@ -10,7 +10,7 @@
 //! One file for every client, rendered once. It is deliberately usable without
 //! the control plane: §16.5 makes the UI a management surface and not a
 //! dependency, and `ssh dc-<id>` keeps working against the last known host when
-//! `n1` is rebooting. Only migration-aware resolution degrades.
+//! the storage node is rebooting. Only migration-aware resolution degrades.
 
 use crate::render::Rendered;
 use crate::Cluster;
@@ -25,7 +25,7 @@ pub(crate) fn render(c: &Cluster) -> Rendered {
         "# Client SSH configuration. The primary client is a Chromebook, which\n\
          # cannot build images and should not be assumed to run anything but a\n\
          # browser and an SSH client: the developer's working environment is a\n\
-         # devcontainer on n2, not the Chromebook (§11).\n\n",
+         # devcontainer on the compute node, not the Chromebook (§11).\n\n",
     );
 
     body.push_str("Host *\n");
@@ -53,7 +53,7 @@ pub(crate) fn render(c: &Cluster) -> Rendered {
         "\n# Devcontainer sessions. The ProxyCommand asks the control plane which node\n\
          # currently hosts the session, so an alias survives a migration (§14.3).\n\
          #\n\
-         # When the control plane is unreachable --- n1 rebooting, or the client off\n\
+         # When the control plane is unreachable --- the storage node rebooting, or the client off\n\
          # the tailnet --- the fallback resolves to the last known host recorded in\n\
          # ~/.ssh/cluster-sessions. The alias keeps working; only migration-aware\n\
          # resolution degrades (§16.5).\n\

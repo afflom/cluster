@@ -176,7 +176,51 @@ impl Cluster {
         self.check_topology()?;
         self.check_firewall()?;
         self.check_variants()?;
+        self.check_runners()?;
         self.check_policy()?;
+        Ok(())
+    }
+
+    /// A role that hosts a runner has the software and the credential to run one
+    /// (§9.5, §12.2).
+    ///
+    /// Every part of this was declared and none of it was joined. Units were
+    /// rendered for three runners, the loop they invoke was rendered per role,
+    /// and the image installed no runner at all --- so `config.sh` was a path
+    /// that did not exist, on a node whose whole purpose in CI was to run jobs.
+    /// T2 and the browser client's node-served mirror both wait on those
+    /// runners, and both had waited since the units were written.
+    fn check_runners(&self) -> Result<(), ClusterError> {
+        if !self.images.hosts_runners() {
+            return Ok(());
+        }
+        let install = self.images.runner_install_dir().ok_or_else(|| {
+            bad(format!(
+                "a variant declares an Actions runner and no `[[variant.upstream]]` \
+                 named `{}` installs one. The rendered unit would start a runner from \
+                 a directory nothing unpacks (§9.5)",
+                crate::images::RUNNER_ARTIFACT
+            ))
+        })?;
+        if !install.starts_with('/') {
+            return Err(bad(format!(
+                "the runner's install_dir is `{install}`, which is not an absolute path"
+            )));
+        }
+
+        // And the credential has a way to reach a node. It cannot be in the
+        // image --- it is a credential --- so enrolment is the only path, and a
+        // runner whose credential is declared nowhere is a unit that is skipped
+        // for ever (§12.2).
+        let pat = crate::render::RUNNER_PAT;
+        if !self.policy.secret.iter().any(|s| s.path == pat) {
+            return Err(bad(format!(
+                "a variant declares an Actions runner and no enrolled secret lands at \
+                 {pat}. A registration credential cannot be in an image, so enrolment \
+                 is the only way it reaches a node --- and without it every runner unit \
+                 is skipped for ever (§9.5, §12.2)"
+            )));
+        }
         Ok(())
     }
 
@@ -1061,7 +1105,7 @@ impl Cluster {
 
     /// Substitute `{policy.<field>}` with a threshold from `model/policy.toml`.
     ///
-    /// The same reason `{n1.loopback}` exists: a retention written beside a
+    /// The same reason `{node1.loopback}` exists: a retention written beside a
     /// command-line flag and again in the policy file would be two sources for
     /// one number, and the one that drifted would be the one nobody looked at.
     pub fn expand_policy(&self, text: &str) -> String {

@@ -184,6 +184,7 @@ fn run() -> Result<String, InitError> {
         }
     }
 
+    set_hostname(&name)?;
     role_firewall_include(&role_id)?;
     apply_role_kargs(&role_id)?;
 
@@ -301,6 +302,31 @@ fn root_disk() -> Result<Option<String>, InitError> {
         .trim()
         .to_string();
     Ok((!parent.is_empty()).then_some(parent))
+}
+
+/// Take the name this machine's ordinal derives (§4.3).
+///
+/// Both halves, because they are read by different things: the kernel's
+/// hostname is what a DHCP client offers when it registers a lease, and
+/// `/etc/hostname` is what survives a reboot. `/etc` is writable state on a
+/// bootc host, so the static name persists across every update and rollback
+/// (§5.2).
+///
+/// Written through `/proc/sys/kernel/hostname` rather than by running
+/// `hostnamectl`: this runs before `systemd-networkd`, `hostnamectl` needs a
+/// bus that may not be up yet, and the kernel interface needs no binary at all.
+///
+/// Nothing did this. Every machine came up as whatever the installer left
+/// behind --- `localhost.localdomain` --- so a fleet of three appeared in a DHCP
+/// lease table as three identical names, and §12.2's first instruction to an
+/// operator ("open the control plane in a browser") began with guessing.
+fn set_hostname(fqdn: &str) -> Result<(), InitError> {
+    let (static_name, short) = boot::hostnames(fqdn);
+    std::fs::write("/etc/hostname", format!("{static_name}\n"))
+        .map_err(|e| InitError::Io(format!("writing /etc/hostname: {e}")))?;
+    std::fs::write("/proc/sys/kernel/hostname", &short)
+        .map_err(|e| InitError::Io(format!("setting the running hostname: {e}")))?;
+    Ok(())
 }
 
 /// Put this role's firewall include where `nftables.conf` includes from.

@@ -220,7 +220,7 @@ fn the_ports_and_the_cabling_are_what_the_model_expects_ch_02() {
 
 /// `CH-03`: the declared storage devices are present, in their declared roles.
 ///
-/// §2.2 is verified physically before `n1` is provisioned, and the fallback ---
+/// §2.2 is verified physically before the storage node is provisioned, and the fallback ---
 /// the cache device becoming a partition of the M.2 --- is one line in the
 /// model. This is the tier that can tell which outcome actually happened, and it
 /// fails if the model says one and the chassis holds the other.

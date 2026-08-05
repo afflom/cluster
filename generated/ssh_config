@@ -6,7 +6,7 @@
 # Client SSH configuration. The primary client is a Chromebook, which
 # cannot build images and should not be assumed to run anything but a
 # browser and an SSH client: the developer's working environment is a
-# devcontainer on n2, not the Chromebook (§11).
+# devcontainer on the compute node, not the Chromebook (§11).
 
 Host *
   ServerAliveInterval 30
@@ -36,7 +36,7 @@ Host node3
 # Devcontainer sessions. The ProxyCommand asks the control plane which node
 # currently hosts the session, so an alias survives a migration (§14.3).
 #
-# When the control plane is unreachable --- n1 rebooting, or the client off
+# When the control plane is unreachable --- the storage node rebooting, or the client off
 # the tailnet --- the fallback resolves to the last known host recorded in
 # ~/.ssh/cluster-sessions. The alias keeps working; only migration-aware
 # resolution degrades (§16.5).

@@ -158,14 +158,19 @@ jobs:
             sudo podman login ghcr.io \
               -u '${{ github.actor }}' -p '${{ secrets.GITHUB_TOKEN }}'
             sudo podman pull "$ref@$digest"
+            # The configuration is mounted at `/config.toml`, which is where
+            # the builder looks. It was passed as `--config /config/config.toml`
+            # --- a flag the builder does not have, so the ISO step would have
+            # failed on the first promotion and nothing static would have said
+            # so. Verified by running the builder against a deliberately
+            # malformed config and reading the path back out of its own error.
             sudo podman run --rm --privileged \
               --security-opt label=type:unconfined_t \
               -v ./iso:/output \
-              -v ./iso:/config:ro \
+              -v ./iso/config.toml:/config.toml:ro \
               -v /var/lib/containers/storage:/var/lib/containers/storage \
               quay.io/centos-bootc/bootc-image-builder:latest \
               --type anaconda-iso \
-              --config /config/config.toml \
               "$ref@$digest"
             sudo mv iso/bootiso/install.iso "iso/$node.iso"
           }

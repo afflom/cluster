@@ -172,7 +172,7 @@ fn read_peer(name: &str, position: u32, url: &str) -> PeerReport {
 ///
 /// An unreachable control plane yields an empty list, and that is deliberate:
 /// the control plane lives on the last node to update, so during its own reboot
-/// no peer can read it. Halting the whole rollout because `n1` is rebooting
+/// no peer can read it. Halting the whole rollout because the storage node is rebooting
 /// would make §14.2's stated window into an outage. The risk this trades away
 /// is small --- a quarantine is posted by a node that rolled back, and that node
 /// is also unhealthy, which halts the rollout by the peer-health clause anyway.

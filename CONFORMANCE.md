@@ -18,6 +18,25 @@ The three honesty levels (R2):
 `cargo xtask audit-limits` fails if any code path returns an error the
 model does not sanction.
 
+## Summary
+
+97 claims across 12 suites, each discharged at exactly one tier.
+
+| Suite | Claims | Tiers |
+| --- | --- | --- |
+| `boot` | 8 | `T0`, `T1`, `T2` |
+| `control` | 10 | `T0` |
+| `definition` | 22 | `T0` |
+| `hardware` | 6 | `T3` |
+| `image` | 7 | `T0` |
+| `lifecycle` | 8 | `T0`, `T2` |
+| `model` | 4 | `T0` |
+| `network` | 5 | `T2` |
+| `reclaim` | 8 | `T0` |
+| `storage` | 4 | `T0`, `T2` |
+| `update` | 10 | `T0`, `T2` |
+| `workload` | 5 | `T0`, `T2` |
+
 ## boot
 
 | ID | Level | Tier | Statement |
@@ -70,6 +89,7 @@ model does not sanction.
 | `CD-19` | `build` | `T0` | Every role's kernel-argument set is rendered, including the empty ones, and the base carries none of the isolation arguments. One image boots all three roles, so an isolcpus= in the image would isolate the storage node's cores too. |
 | `CD-20` | `build` | `T0` | Every secret the operator enrols is declared with a destination and a mode, the rendered policy carries all of them, and no value appears in any model file or rendered artifact. |
 | `CD-21` | `build` | `T0` | Every enrolled secret declares how its value becomes the file at its destination, and what is written is that format applied to the value rather than the value verbatim. |
+| `CD-22` | `build` | `T0` | A role that hosts an Actions runner has the runner installed by the image, a loop helper that is actually rendered, and an enrolled credential; the unit, the loop and the enrolment policy name the same destination for that credential, and a node given none of them skips its runners rather than failing them. |
 | `CD-10` | `build` | `T0` | The rendered client SSH configuration carries a devcontainer alias that resolves a session's current host from the control plane and falls back to the last known host when the control plane is unreachable. |
 
 ## hardware

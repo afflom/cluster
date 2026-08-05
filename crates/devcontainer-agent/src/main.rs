@@ -26,7 +26,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("serve") | None => serve(),
         // Called by the `sshrc` hook on every connection, and by the tunnel
-        // attachment on `n2`. `last_attached_at` drives every reclamation
+        // attachment on the compute node. `last_attached_at` drives every reclamation
         // threshold, and a session somebody is using that looks idle is one that
         // gets archived out from under them (§15.1).
         Some("attached") => match args.get(1) {
@@ -280,7 +280,12 @@ fn migrate(session: &str) -> Result<String, AgentError> {
         session: session.to_string(),
         workspace: workspace_of(session),
         home: env_or("AGENT_HOME", "/var/lib/devcontainer-home"),
-        target: env_or("CLUSTER_MIGRATION_TARGET", "n1"),
+        // The *role*, matching what the rendered unit sets and what
+        // `model/policy.toml` declares. This defaulted to the storage node, a machine name
+        // withdrawn when roles replaced it (§2.3) --- so an agent started
+        // without its environment would have rsynced a workspace to a host
+        // nothing resolves.
+        target: env_or("CLUSTER_MIGRATION_TARGET", "storage"),
         image_digest: digest_of(session)?,
         grace_s: env_or("AGENT_STOP_GRACE_S", "30").parse().unwrap_or(30),
     };

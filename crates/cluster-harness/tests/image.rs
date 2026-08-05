@@ -604,10 +604,26 @@ fn the_release_publishes_the_installer_and_its_checksum_cl_05() {
 
     // And the bootstrap configuration it is built with is the one in the
     // repository, so what the ISO installs is what the model renders.
+    //
+    // Mounted where the builder looks, and passed by no flag. This asserted
+    // `/config/config.toml`, which was the argument to a `--config` flag the
+    // builder does not have --- so the ISO step would have failed on the first
+    // promotion, and the gate covering that step was satisfied by the presence
+    // of the wrong string. The path was established by running the builder
+    // against a deliberately malformed configuration and reading it back out of
+    // its own error; VERIFICATION.md records that.
     assert!(
-        promote.does("/config/config.toml"),
-        "the ISO carries this repository's bootstrap configuration (§12.1)"
+        promote.does("/config.toml:ro"),
+        "the filled configuration must be mounted at /config.toml, which is where \
+         bootc-image-builder reads it (§12.1)"
     );
+    for absent in ["--config", "--local"] {
+        assert!(
+            !promote.does(absent),
+            "`{absent}` is not a flag bootc-image-builder has; passing it fails the \
+             ISO build, and nothing else in this repository would say so (§12.1)"
+        );
+    }
 
     let config = std::fs::read_to_string(root().join("bootstrap/config.toml"))
         .expect("the bootstrap configuration is committed");
@@ -835,8 +851,35 @@ fn every_upstream_binary_is_pinned_and_verified_ci_06() {
             match upstream.compression.as_str() {
                 "bz2" => assert!(file.issues("bunzip2"), "{}: bz2", variant.id),
                 "gz" => assert!(file.issues("gunzip") || file.issues("tar -xz")),
+                "tar.gz" => assert!(
+                    file.issues("tar -xzf"),
+                    "{}: {} is a gzipped tar and the build does not unpack it as one",
+                    variant.id,
+                    upstream.name
+                ),
                 "" => {}
                 other => panic!("{}: unknown compression `{other}`", variant.id),
+            }
+
+            // A tree lands where the model says, and a single binary lands in
+            // /usr/bin. The distinction is not cosmetic: the runner resolves its
+            // own siblings, so flattening it into /usr/bin gives a directory of
+            // scripts that cannot find each other.
+            if upstream.is_tree() {
+                assert!(
+                    upstream.install_dir.starts_with('/'),
+                    "{}: {} unpacks to `{}`, which is not an absolute path",
+                    variant.id,
+                    upstream.name,
+                    upstream.install_dir
+                );
+                assert!(
+                    file.issues(&upstream.install_dir),
+                    "{}: {} declares install_dir `{}` and the build unpacks it elsewhere",
+                    variant.id,
+                    upstream.name,
+                    upstream.install_dir
+                );
             }
             checked += 1;
         }
@@ -850,7 +893,7 @@ fn every_upstream_binary_is_pinned_and_verified_ci_06() {
 
 /// `CL-07`: a fork's code never runs on a node.
 ///
-/// §9.1 derives "T2 may run on `n1`" from fork pull requests not existing, which
+/// §9.1 derives "T2 may run on the storage node" from fork pull requests not existing, which
 /// held only while the repository was private. It is public (§21.10), so this
 /// guard carries weight the specification's own reasoning no longer does: a
 /// self-hosted runner executing a fork's workflow is arbitrary code on the node
@@ -1085,6 +1128,131 @@ fn every_placeholder_in_a_shipping_artifact_is_filled_cl_08() {
             !kickstart.contains(forbidden),
             "the kickstart mentions `{forbidden}`. Credentials reach a node through the \
              browser after it boots, not through a release artifact (§12.2)"
+        );
+    }
+}
+
+/// `CD-22`: a role that hosts an Actions runner can actually run one.
+///
+/// Every part of this was declared and none of it was joined. Three runner units
+/// were rendered, the loop they invoke was rendered per role, the image
+/// installed no runner at all, the units were never enabled, and no credential
+/// had a path to a node. Four independent reasons no self-hosted runner could
+/// ever register --- and T2 and the browser client's node-served mirror both wait
+/// on those runners.
+#[test]
+fn a_role_that_hosts_a_runner_can_run_one_cd_22() {
+    let c = model();
+    let files = cluster_model::render_all(&c);
+    let containers = containerfiles(&root());
+    let image = containers
+        .iter()
+        .find(|f| f.name == cluster_model::render::NODE_DIR)
+        .expect("images/node/Containerfile is the one image (§8.4)");
+
+    let hosting: Vec<_> = c
+        .images
+        .variant
+        .iter()
+        .filter(|v| !v.runner.is_empty())
+        .collect();
+    assert!(
+        !hosting.is_empty(),
+        "no role hosts a runner, so T2 and the mirror have nothing to run on"
+    );
+
+    // The image installs it, pinned and checked. A runner executes whatever a
+    // workflow tells it to, on a node holding the registry and every
+    // devcontainer, so the digest matters more here than anywhere.
+    let install = c
+        .images
+        .runner_install_dir()
+        .expect("the model check requires it where a role hosts a runner");
+    assert!(
+        image.issues(&install),
+        "the image must unpack the runner into {install}, or `config.sh` is a path \
+         that does not exist on the node the unit starts it from"
+    );
+    assert!(
+        image.issues(&format!("{install}/config.sh")),
+        "the build must check the runner is really there: an archive that changed \
+         layout would leave a unit failing on every boot"
+    );
+
+    let pat = cluster_model::render::RUNNER_PAT;
+    for variant in &hosting {
+        let role = &variant.role;
+        // The loop the unit invokes is one the renderer actually emits. This is
+        // the defect: units said `runner-loop`, the renderer emits
+        // `runner-loop-<role>`, and check-wiring's prefix match could not see it.
+        let helper = format!("node/libexec/runner-loop-{role}");
+        assert!(
+            files.iter().any(|f| f.path == helper),
+            "{role} hosts a runner and {helper} is not rendered"
+        );
+
+        for runner in &variant.runner {
+            let unit = files
+                .iter()
+                .find(|f| f.path == format!("node/systemd/cluster-runner-{}.service", runner.name))
+                .unwrap_or_else(|| panic!("{} has no rendered unit", runner.name));
+
+            let exec = unit
+                .body
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("ExecStart="))
+                .expect("a runner unit starts something");
+            assert_eq!(
+                exec,
+                format!("/usr/libexec/cluster/runner-loop-{role}"),
+                "{} invokes a helper that is not the one rendered for its role",
+                runner.name
+            );
+
+            // Skipped rather than failed when the cluster has not been enrolled.
+            // systemd skips a unit whose condition is unmet, which is what keeps
+            // §10.1's "no failed units" honest on a node that has simply not
+            // been given its secrets yet.
+            assert!(
+                unit.body.contains(&format!("ConditionPathExists={pat}")),
+                "{} must be skipped, not failed, on a cluster given no credential",
+                runner.name
+            );
+
+            // Enabled, so it is started rather than merely shipped.
+            assert!(
+                image.issues(&format!("cluster-runner-{}.service", runner.name)),
+                "{} is rendered and never enabled, so it never starts",
+                runner.name
+            );
+        }
+    }
+
+    // One destination for the credential, named by the policy, the unit and the
+    // loop alike. Three names for one file is how a unit waits for ever on a
+    // path nothing writes.
+    assert!(
+        c.policy.secret.iter().any(|s| s.path == pat),
+        "no enrolled secret lands at {pat}, so no runner is ever started"
+    );
+    for variant in &hosting {
+        let helper = files
+            .iter()
+            .find(|f| f.path == format!("node/libexec/runner-loop-{}", variant.role))
+            .expect("checked above");
+        assert!(
+            helper.body.contains(pat),
+            "the loop for {} must read the credential from {pat}",
+            variant.role
+        );
+        // And it mints a registration token rather than using the enrolled value
+        // as one. A registration token expires in an hour; an ephemeral runner
+        // re-registers after every job.
+        assert!(
+            helper.body.contains("registration-token"),
+            "the loop for {} must mint a registration token, or it works until \
+             the enrolled one expires and then stops",
+            variant.role
         );
     }
 }

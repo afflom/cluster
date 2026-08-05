@@ -13,7 +13,7 @@
 # **Addresses are derived from ordinals.** `[addressing]` declares two bases and
 # the renderer and the node compute the same answers from them, so a link
 # prefix is never written against a pair of machines (§4.1). The previous
-# revision declared three `[[link]]` tables naming `n1`, `n2` and `n3`; those
+# revision declared three `[[link]]` tables naming the machines directly; those
 # names no longer exist.
 #
 # The route table is *derived* and never written (§4.2). A triangle with only

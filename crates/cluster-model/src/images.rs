@@ -267,6 +267,22 @@ pub struct Upstream {
     /// How the artifact is compressed, if it is.
     #[serde(default)]
     pub compression: String,
+    /// Where an archive is unpacked, when the artifact is a tree rather than a
+    /// single binary. Empty means the artifact is one executable for
+    /// `/usr/bin`.
+    ///
+    /// The Actions runner is a directory of scripts and assemblies that expects
+    /// to find its own siblings, so it cannot be flattened into `/usr/bin` the
+    /// way `restic` can.
+    #[serde(default)]
+    pub install_dir: String,
+}
+
+impl Upstream {
+    /// Whether this artifact is unpacked as a tree.
+    pub fn is_tree(&self) -> bool {
+        !self.install_dir.is_empty()
+    }
 }
 
 impl Upstream {
@@ -337,7 +353,39 @@ impl ImagesFile {
     pub fn runtime_of(&self, _variant: &Variant) -> Option<&Runtime> {
         self.runtime(&self.default_runtime)
     }
+
+    /// Every upstream artifact any variant declares.
+    ///
+    /// One image carries the union of what the roles need (§8.4), so an
+    /// artifact declared on one variant is present for all of them.
+    pub fn upstreams(&self) -> impl Iterator<Item = &Upstream> {
+        self.variant.iter().flat_map(|v| v.upstream.iter())
+    }
+
+    /// Where the Actions runner is unpacked, if it is declared.
+    ///
+    /// `None` is a model error when any variant hosts a runner, and
+    /// [`crate::Cluster::check`] reports it: a unit that starts a runner from a
+    /// directory nothing installs is a unit that fails on every boot of the
+    /// node it was meant to make useful.
+    pub fn runner_install_dir(&self) -> Option<String> {
+        self.upstreams()
+            .find(|u| u.name == RUNNER_ARTIFACT)
+            .map(|u| u.install_dir.clone())
+    }
+
+    /// Whether any variant hosts an Actions runner.
+    pub fn hosts_runners(&self) -> bool {
+        self.variant.iter().any(|v| !v.runner.is_empty())
+    }
 }
+
+/// The upstream artifact that is the Actions runner.
+///
+/// Named rather than inferred: the model check looks for exactly this when a
+/// variant declares a runner, and a typo that made it look absent would render
+/// units pointing at a directory nothing unpacks.
+pub const RUNNER_ARTIFACT: &str = "actions-runner";
 
 impl Variant {
     /// Every Quadlet this variant runs: the base's, then its own.

@@ -669,7 +669,7 @@ fn a_devcontainer_alias_survives_migration_cd_10() {
     );
 
     // §16.5: the UI is a management surface, not a dependency. `ssh dc-<id>`
-    // keeps working against the last known host when n1 is rebooting, and only
+    // keeps working against the last known host when the storage node is rebooting, and only
     // migration-aware resolution degrades.
     assert!(
         ssh.body.contains("cluster-sessions"),
@@ -750,17 +750,36 @@ fn trust_and_pull_order_render_from_the_model_cd_11() {
         }
     }
 
-    // No address survives unsubstituted. A `{n1.loopback}` rendered literally
+    // No address survives unsubstituted. A `{node1.loopback}` rendered literally
     // into a unit file is exactly the failure the placeholder exists to prevent,
     // and it would be invisible until a service failed to bind.
+    //
+    // The names come from the model. This used to name `{n1.loopback}`,
+    // `{n2.loopback}` and `{n3.loopback}` --- machine names withdrawn when roles
+    // replaced them --- so it searched for three strings the renderer could not
+    // emit and passed on every tree, including one carrying a real
+    // unsubstituted placeholder.
     for file in &files {
-        assert!(
-            !file.body.contains("{n1.loopback}")
-                && !file.body.contains("{n2.loopback}")
-                && !file.body.contains("{n3.loopback}"),
-            "{}: an unsubstituted placeholder reached the rendered tree",
-            file.path
-        );
+        for node in &c.nodes() {
+            for field in ["loopback", "name", "fqdn"] {
+                let placeholder = format!("{{{}.{field}}}", node.name);
+                assert!(
+                    !file.body.contains(&placeholder),
+                    "{}: `{placeholder}` reached the rendered tree unsubstituted",
+                    file.path
+                );
+                let short = node
+                    .name
+                    .split_once('.')
+                    .map_or(node.name.as_str(), |(h, _)| h);
+                let short_placeholder = format!("{{{short}.{field}}}");
+                assert!(
+                    !file.body.contains(&short_placeholder),
+                    "{}: `{short_placeholder}` reached the rendered tree unsubstituted",
+                    file.path
+                );
+            }
+        }
     }
 
     // And substitution is not a no-op: the addresses really are in there.
@@ -984,13 +1003,21 @@ fn host_policy_is_rendered_not_declared_twice_cd_14() {
     }
 
     // And no image build declares any of them a second time.
+    //
+    // Read off the directory rather than from a list of names. The list said
+    // `base`, `n1`, `n2`, `n3` --- four directories that stopped existing when
+    // three images became one (§8.4) --- so every iteration hit the `continue`
+    // and this half of `CD-14` checked nothing at all.
     let root = root();
-    for variant in ["base", "n1", "n2", "n3"] {
-        let Ok(text) =
-            std::fs::read_to_string(root.join("images").join(variant).join("Containerfile"))
-        else {
+    let images = std::fs::read_dir(root.join("images")).expect("images/ exists");
+    let mut checked = 0usize;
+    for entry in images.flatten() {
+        let path = entry.path().join("Containerfile");
+        let variant = entry.file_name().to_string_lossy().to_string();
+        let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
+        checked += 1;
         for declared in [
             "PasswordAuthentication",
             "SELINUXTYPE",
@@ -1003,6 +1030,11 @@ fn host_policy_is_rendered_not_declared_twice_cd_14() {
             );
         }
     }
+    assert!(
+        checked > 0,
+        "no Containerfile was read, so this half of CD-14 checked nothing"
+    );
+    {}
 }
 
 /// `CD-15` and `CC-06`: the control plane is published where the operator is,
