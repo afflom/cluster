@@ -193,14 +193,18 @@ impl ApiError {
 mod tests {
     use super::*;
 
-    /// `CC-02`: every reportable condition has a status that tells the caller
-    /// what to do, and none of them is a 500.
-    #[test]
-    fn every_error_carries_an_actionable_status_cc_02() {
-        let errors = [
+    /// Every variant of [`ApiError`], one of each.
+    ///
+    /// Built by a `match` on a value rather than by a list, so a variant added
+    /// later is a *compile* error here rather than a silent gap in `CC-02`. The
+    /// list form covered five of the eight that existed, and the three it
+    /// missed were the three most recently added --- which is exactly how a
+    /// list-shaped exhaustiveness check fails.
+    fn one_of_each() -> Vec<ApiError> {
+        let all = vec![
             ApiError::Unauthenticated,
             ApiError::NotAuthorized {
-                login: "someone@example.com".to_string(),
+                login: "someone-else".to_string(),
             },
             ApiError::NotFound {
                 kind: "session",
@@ -214,15 +218,81 @@ mod tests {
                 attempted: "list sessions".to_string(),
                 because: "database is locked".to_string(),
             },
+            ApiError::EnrolmentUnavailable {
+                because: "the rendered policy declares no secrets".to_string(),
+            },
+            ApiError::UnknownSecret {
+                id: "root_password".to_string(),
+                known: vec!["ssh_authorized_key".to_string()],
+            },
+            ApiError::RejectedSecret {
+                id: "ssh_authorized_key".to_string(),
+                because: "it contains a newline".to_string(),
+            },
         ];
+
+        // The exhaustiveness itself. Adding a variant without adding it above
+        // fails to compile; this arm is what makes that true.
+        for error in &all {
+            match error {
+                ApiError::Unauthenticated
+                | ApiError::NotAuthorized { .. }
+                | ApiError::NotFound { .. }
+                | ApiError::NotPermitted { .. }
+                | ApiError::StoreUnavailable { .. }
+                | ApiError::EnrolmentUnavailable { .. }
+                | ApiError::UnknownSecret { .. }
+                | ApiError::RejectedSecret { .. } => {}
+            }
+        }
+        all
+    }
+
+    /// `CC-02`: every reportable condition has a status that tells the caller
+    /// what to do, and none of them is a 500.
+    #[test]
+    fn every_error_carries_an_actionable_status_cc_02() {
+        let errors = one_of_each();
+        assert_eq!(errors.len(), 8, "one of each variant");
+
         for error in &errors {
+            let status = error.status();
             assert_ne!(
-                error.status(),
-                500,
+                status, 500,
                 "a 500 is the absence of a diagnosis, and this type exists so there is \
                  always one: {error}"
             );
-            assert!(!error.to_string().is_empty());
+            // A status a client can act on: a refusal, or a service condition.
+            assert!(
+                (400..=499).contains(&status) || status == 503,
+                "{error} carries {status}, which says nothing about what to do"
+            );
+            // And the message says something. An empty condition would render
+            // as a status code and nothing else, which is what this type exists
+            // to prevent.
+            let text = error.to_string();
+            assert!(text.len() > 20, "`{text}` is not a diagnosis");
         }
+    }
+
+    /// No condition may quote a credential.
+    ///
+    /// An error goes to a log, and a log is read by more people than a
+    /// credential should be. The two enrolment conditions are the ones that
+    /// carry a caller's input at all, and neither takes the value.
+    #[test]
+    fn no_condition_can_carry_a_value_cc_09() {
+        let secret = "ghp_thisisasecretvaluethatmustnotappear";
+        for error in one_of_each() {
+            assert!(
+                !error.to_string().contains(secret),
+                "no condition is constructed from a value: {error}"
+            );
+        }
+        // Constructed the way the enrolment path constructs them, with the
+        // value in scope and deliberately not used.
+        let refused = crate::enrolment::check_value("ssh_authorized_key", &format!("{secret}\nx"))
+            .expect_err("two lines");
+        assert!(!refused.to_string().contains(secret), "{refused}");
     }
 }

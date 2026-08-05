@@ -9,14 +9,27 @@
 # is diff-gated (§7.2, CD-07). This file only says how to wrap it.
 
 [customizations.installer.kickstart]
-# Substituted at ISO build time from Actions secrets. The rendered kickstart
-# carries the @@PLACEHOLDER@@ names and never a value --- a kickstart is a
-# plain-text file in a repository, and a secret in one is a secret published
-# (§12.2, CD-07).
-# A multi-line basic string. A kickstart has newlines in it and a single-quoted
-# TOML string cannot, which the substitution found by producing a config that
-# would not parse --- the sort of thing that fails at ISO build time and nowhere
-# earlier.
+# This file is a template, and the placeholder below is filled by
+# `cargo xtask installer-config`, which writes the configuration the builder is
+# actually given. The template is never handed to the builder itself.
+#
+# The kickstart is not inlined here because it is rendered from the model and
+# diff-gated (§7.2, CD-07): a copy of it in this file would be a second source
+# for the disk layout.
+#
+# **No secret is substituted here, and none ever was supplied.** These carried
+# three `@@SECRET@@` names once, filled from Actions secrets that did not exist
+# --- and the design was wrong even had they existed, because an ISO is a
+# release artifact and a secret put in one is published to whoever downloads it.
+# A node installs unenrolled and is given its credentials through the browser
+# after it boots (§12.2).
+#
+# A multi-line basic string, because a kickstart has newlines and a
+# single-quoted TOML string cannot hold one. That shipped once: the
+# substitution produced a configuration the builder would have refused, at ISO
+# build time and nowhere earlier. `installer-config` now parses what it wrote
+# and compares it against what it substituted, so the escaping is checked
+# rather than believed.
 contents = """
 @@RENDERED_KICKSTART@@
 """

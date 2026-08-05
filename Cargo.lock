@@ -228,6 +228,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tower",
 ]
 
 [[package]]
@@ -263,6 +264,7 @@ dependencies = [
 name = "cluster-model"
 version = "0.1.0"
 dependencies = [
+ "cluster-ctl",
  "repo-model",
  "serde",
  "serde_json",
@@ -1912,6 +1914,7 @@ version = "1.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
 dependencies = [
+ "bytes",
  "libc",
  "mio",
  "pin-project-lite",
@@ -2307,6 +2310,7 @@ version = "0.1.0"
 dependencies = [
  "cluster-model",
  "repo-model",
+ "toml 0.8.23",
 ]
 
 [[package]]

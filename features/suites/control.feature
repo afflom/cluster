@@ -85,3 +85,13 @@ Feature: control
     And the page names what it is waiting for rather than reading as broken
     And an identifier the cluster does not declare is refused, naming what it does
     And a value carrying a newline is refused without quoting it
+
+  @CC-10 @build
+  Scenario: A session identifier is one every consumer of it can carry
+    Given an identifier that becomes a directory, a URL segment, a container name and an alias
+    When a session is created with it
+    Then an identifier carrying a path separator or a traversal is refused
+    And one carrying a space, an uppercase letter or a quote is refused
+    And one longer than a hostname label is refused
+    And the agent refuses it again at its own boundary rather than trusting the control plane
+    And the refusal is a sanctioned condition rather than a rename or a panic

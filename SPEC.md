@@ -973,9 +973,27 @@ existing — and enters the rest. §16.2's authorization is what makes this a
 bootstrap path rather than an open door.
 
 `model/policy.toml` declares each secret by **destination**, never by value:
-where it lands, at what mode, and what applying it does. `CD-20` asserts the
-rendering, `CL-08` asserts no artifact carries a placeholder nothing fills, and
-`CC-09` asserts the control plane hands none of them back.
+where it lands, at what mode, what applying it does, and in what **format** it
+is written. `CD-20` asserts the rendering, `CD-21` asserts the format, `CL-08`
+asserts no artifact carries a placeholder nothing fills, and `CC-09` asserts the
+control plane hands none of them back.
+
+Format is a separate question from destination, and conflating the two shipped a
+credential that could not have worked. An operator enters a *credential*; most
+destinations want exactly that credential, and one wants a document built around
+it. `/etc/containers/auth.json` is parsed by podman as JSON, so the bare token
+written there failed every pull — unattended, at the next update, three layers
+from its cause.
+
+| Format | What is written |
+| --- | --- |
+| `raw` | the entered value, and a newline |
+| `docker-auth` | a containers-auth document keyed by the declared registry, whose username is the login the device flow authenticated |
+
+The username being the authenticated login is not a convenience. The operator
+entering a GHCR token is, by construction, authenticated as the GitHub account
+that token belongs to (§16.2) — so the pair ghcr.io wants is already in hand and
+is never a second thing to enter.
 
 | Secret | Lives in | Reaches a node | Rotation |
 | --- | --- | --- | --- |
@@ -1259,6 +1277,22 @@ release — is worse than staying on the old image.
 | `state` | `creating`, `running`, `stopped`, `migrating`, `archived`, `purged` |
 | `created_at`, `last_attached_at` | `last_attached_at` drives §15.3 |
 | `dirty` | recomputed on every stop and before every reclaim step |
+
+**`id` is constrained, because four things consume it.** It becomes a directory
+under the workspace root, a path segment in the URL the agent is asked for, a
+`podman exec` container name, and the `dc-<id>` SSH alias. Lowercase letters,
+digits and hyphens, not beginning or ending with a hyphen, at most 60 characters
+— the intersection of four grammars, and 60 is what a hostname label leaves once
+`dc-` is prepended. `CC-10` asserts it, at the control plane and again at the
+agent: an identifier arrives there as a URL segment from another machine, and
+trusting it because something else checked it is how a `..` reaches a path.
+
+The constraint is what makes the rest of §15 safe to state. An unconstrained
+identifier put `..` into `workspace_of`, and — because the agent built its
+answers by concatenation and the control plane read them by substring — let a
+crafted one make a dirty workspace report clean to the step that deletes
+archives. The agent serialises its answers now and the control plane parses
+them; an answer that cannot be understood is dirty (§15.2).
 
 **`last_attached_at` has two sources, and the better one is the tunnel.**
 

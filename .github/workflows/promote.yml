@@ -127,29 +127,26 @@ jobs:
           set -euo pipefail
           mkdir -p iso
 
-          # Substitute the rendered kickstart into the builder's configuration.
+          # Fill the builder's configuration with the rendered kickstart.
           #
           # `bootstrap/config.toml` names it as `@@RENDERED_KICKSTART@@` and
           # nothing used to fill it, so the ISO would have shipped a kickstart
           # whose entire body was that literal string --- an install failure and
           # no earlier signal at all. `CL-08` asserts this step exists.
           #
-          # Substituted here rather than committed whole, because the kickstart
-          # is rendered from the model and diff-gated (§7.2, CD-07): a config
-          # carrying a copy of it would be a second source for the layout.
-          python3 - <<'SUBST'
-          from pathlib import Path
-          config = Path("bootstrap/config.toml").read_text()
-          kickstart = Path("generated/bootstrap/node.ks").read_text()
-          marker = "@@RENDERED_KICKSTART@@"
-          if marker not in config:
-              raise SystemExit(f"bootstrap/config.toml no longer names {marker}")
-          # A multi-line basic string, so the newlines survive. Backslashes are
-          # escaped because the kickstart uses shell line continuations, and any
-          # run of three quotes would close the string early.
-          escaped = kickstart.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
-          Path("iso/config.toml").write_text(config.replace(marker, escaped))
-          SUBST
+          # This was a Python heredoc here, which was wrong twice over. Nothing
+          # compiled it, so a typo in it would have been found by an operator
+          # holding a broken ISO. And `CL-08` covered it by *reimplementing* the
+          # escaping in Rust and asserting its own copy parsed --- a gate that
+          # could not have caught the shipping code being wrong, because it
+          # never ran it.
+          #
+          # It is a workspace task now: compiled, linted, unit-tested against
+          # the characters that break a TOML basic string, and invoked by the
+          # test and by this step alike. It parses back what it wrote and
+          # compares it against the kickstart, so what the builder reads is
+          # byte for byte what `just render` produced.
+          cargo run --quiet -p xtask -- installer-config --output iso/config.toml
 
           # One installer, because there is one image. What the operator chooses
           # is the order machines are powered on, not which ISO to mount (§12.1).

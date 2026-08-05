@@ -20,6 +20,72 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::ApiError;
+
+/// The longest identifier a session may carry.
+///
+/// An SSH alias, a container name, a directory name and a tunnel name are all
+/// built from it, and the shortest of those limits is the hostname label's 63
+/// characters. `dc-` is prepended to make the alias, so 60 is what is left.
+pub const MAX_SESSION_ID: usize = 60;
+
+/// Check that an identifier is one every consumer of it can carry (§15.1).
+///
+/// # Why this exists
+///
+/// The identifier is not merely a database key. It becomes a directory name
+/// under the workspace root, a path segment in a URL the agent is asked for, a
+/// `podman exec` container name, and the `dc-` SSH alias. Each of those has a
+/// grammar, and the identifier was checked against none of them --- the only
+/// test at creation was that no session already had it.
+///
+/// Three consequences, in ascending order of unpleasantness. An identifier with
+/// a space makes an SSH alias nothing resolves. One with a `/` makes a URL
+/// whose path is not the path anybody meant. And one with `..` in it makes
+/// `workspace_of` a traversal out of the workspace root, which is where the
+/// dirty computation reads and the migration copies from.
+///
+/// Restricted rather than escaped. Escaping is right when the input is arbitrary
+/// and has to survive; here the input is a name somebody chooses, four different
+/// grammars have to accept it, and the intersection of them is small and easy to
+/// state. A name that is refused can simply be a different name.
+pub fn check_session_id(id: &str) -> Result<(), ApiError> {
+    let refuse = |because: &str| {
+        Err(ApiError::NotPermitted {
+            attempted: format!("use `{id}` as a session identifier"),
+            because: because.to_string(),
+        })
+    };
+
+    if id.is_empty() {
+        return refuse("it is empty");
+    }
+    if id.len() > MAX_SESSION_ID {
+        return refuse(&format!(
+            "it is {} characters. The identifier becomes an SSH alias, a container name \
+             and a directory name, and the shortest of those limits is {MAX_SESSION_ID} \
+             (§15.1)",
+            id.len()
+        ));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return refuse(
+            "it may hold only lowercase letters, digits and hyphens. The identifier \
+             becomes a directory name, a URL path segment, a container name and an SSH \
+             alias, and each of those has a grammar (§15.1)",
+        );
+    }
+    if id.starts_with('-') || id.ends_with('-') {
+        return refuse(
+            "a hostname label may not begin or end with a hyphen, and the `dc-` alias is one",
+        );
+    }
+    Ok(())
+}
+
 /// Where a session is in its lifecycle (§15.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -252,6 +318,60 @@ impl Reclaimable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `CC-10`: an identifier is one every consumer of it can carry.
+    ///
+    /// It becomes a directory under the workspace root, a URL path segment the
+    /// agent is asked for, a `podman exec` container name and the `dc-` SSH
+    /// alias. The only check used to be that nothing else had claimed it.
+    #[test]
+    fn an_identifier_every_consumer_can_carry_cc_10() {
+        for ok in [
+            "abc123",
+            "a",
+            "my-project-2",
+            "0",
+            &"a".repeat(MAX_SESSION_ID),
+        ] {
+            assert!(
+                check_session_id(ok).is_ok(),
+                "`{ok}` is a name somebody would reasonably choose"
+            );
+        }
+
+        // Each of these reaches a different consumer, and breaks it differently.
+        for (bad, why) in [
+            ("", "empty"),
+            ("../../etc", "a traversal out of the workspace root"),
+            ("a/b", "a URL path segment that is two segments"),
+            ("a b", "an SSH alias nothing resolves"),
+            ("Abc", "a container name podman lowercases"),
+            ("-lead", "a hostname label may not begin with a hyphen"),
+            ("trail-", "a hostname label may not end with a hyphen"),
+            ("a.b", "a dot makes `dc-a.b` two labels"),
+            ("a\nb", "a newline in a request line"),
+            ("a\"b", "a quote in a document somebody parses"),
+            (&"a".repeat(MAX_SESSION_ID + 1), "longer than a label"),
+        ] {
+            assert!(
+                check_session_id(bad).is_err(),
+                "`{bad}` must be refused: {why}"
+            );
+        }
+
+        // The refusal is a sanctioned condition with a status that says what to
+        // do, not a panic and not a silent rename.
+        let err = check_session_id("../etc").expect_err("a traversal");
+        assert_eq!(err.status(), 409);
+
+        // And the one that mattered most: an identifier crafted to put a
+        // `"dirty":false` substring into the agent's answer, which is what the
+        // control plane used to search that answer for.
+        assert!(
+            check_session_id("x\",\"dirty\":false,\"y\":\"").is_err(),
+            "this identifier is why the control plane parses rather than searches"
+        );
+    }
 
     fn session(dirty: bool, last_attached_at: u64) -> Session {
         Session::new(

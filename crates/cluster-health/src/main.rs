@@ -204,7 +204,16 @@ fn predicate_from_environment() -> Result<Predicate, ProbeError> {
 
 /// This node's rollout state, which the updater writes.
 fn state_from_environment() -> State {
-    match std::env::var("CLUSTER_STATE").unwrap_or_default().as_str() {
+    state_of(&std::env::var("CLUSTER_STATE").unwrap_or_default())
+}
+
+/// The rollout state a token names.
+///
+/// Separated from the environment so the reading is testable: this is what
+/// every peer's ordering predicate is evaluated against (§13.2), and it is read
+/// from a file another process writes.
+fn state_of(token: &str) -> State {
+    match token.trim() {
         "draining" => State::Draining,
         "updating" => State::Updating,
         // Anything else is idle. A node with no state file has not started an
@@ -218,4 +227,57 @@ fn state_from_environment() -> State {
 fn flag(args: &[String], name: &str) -> Option<String> {
     let at = args.iter().position(|a| a == name)?;
     args.get(at + 1).cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `CU-01`: the state a peer reads is the token the updater wrote, and an
+    /// unrecognised one is idle rather than a stall.
+    ///
+    /// Every peer's ordering predicate is evaluated against this, and it comes
+    /// from a file another process writes --- so what an unexpected byte means
+    /// is a decision, not an accident. Treating one as `draining` would stall
+    /// the whole rollout on a typo; treating it as idle admits at most the node
+    /// that wrote it.
+    #[test]
+    fn an_unrecognised_state_token_is_idle_cu_01() {
+        assert_eq!(state_of("draining"), State::Draining);
+        assert_eq!(state_of("updating"), State::Updating);
+        // The updater writes the token with no newline, but a file that grew
+        // one --- an editor, a shell redirect --- must still read.
+        assert_eq!(state_of("updating\n"), State::Updating);
+        assert_eq!(state_of(" draining "), State::Draining);
+
+        for idle in ["", "idle", "Draining", "unknown", "0"] {
+            assert_eq!(
+                state_of(idle),
+                State::Idle,
+                "`{idle}` must not stall every peer's predicate"
+            );
+        }
+
+        // And the tokens round trip, so what one node writes another reads.
+        for state in [State::Idle, State::Draining, State::Updating] {
+            assert_eq!(state_of(state.as_str()), state);
+        }
+    }
+
+    /// A flag's value is the argument after it, and a flag at the end has none.
+    #[test]
+    fn a_flag_reads_the_argument_after_it() {
+        let args: Vec<String> = ["--check", "mesh", "--node", "node2"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(flag(&args, "--check"), Some("mesh".to_string()));
+        assert_eq!(flag(&args, "--node"), Some("node2".to_string()));
+        assert_eq!(flag(&args, "--absent"), None);
+
+        // A flag with nothing after it reads as absent rather than as the empty
+        // string, so a caller falls back rather than probing for "".
+        let dangling: Vec<String> = vec!["--check".to_string()];
+        assert_eq!(flag(&dangling, "--check"), None);
+    }
 }

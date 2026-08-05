@@ -453,6 +453,12 @@ async fn create_session(
     Json(request): Json<CreateSession>,
 ) -> Result<Json<Session>, ApiError> {
     let owner = caller(&headers, &api)?;
+
+    // Before anything else, and before the identifier reaches a path, a URL or
+    // an alias. It becomes all three (§15.1), and the only check here used to be
+    // that nothing else had claimed it.
+    crate::session::check_session_id(&request.id)?;
+
     let store = locked(&api, "create session")?;
 
     if store.session(&request.id).is_ok() {
@@ -683,11 +689,27 @@ fn observe_dirty(session: &Session) -> DirtyObservation {
 
     match output {
         Ok(o) if o.status.success() => {
-            let text = String::from_utf8_lossy(&o.stdout);
-            DirtyObservation::observed(!text.contains("\"dirty\":false"))
+            DirtyObservation::observed(read_dirty(&String::from_utf8_lossy(&o.stdout)))
         }
         _ => DirtyObservation::observed(true),
     }
+}
+
+/// Read the agent's answer, or treat it as dirty.
+///
+/// **Parsed, not searched.** This was `!text.contains("\"dirty\":false")` over a
+/// document the agent built with `format!` from an identifier nobody validated.
+/// A session whose id contained `","dirty":false,"x":"` produced a body carrying
+/// that substring before the real field, so a dirty workspace read as clean ---
+/// and the step that reads this is the one that deletes the archive.
+///
+/// Anything that does not parse, or that carries no boolean `dirty`, is dirty.
+/// An answer that cannot be understood is not an answer that says "safe".
+fn read_dirty(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("dirty")?.as_bool())
+        .unwrap_or(true)
 }
 
 /// Unix seconds.
@@ -731,13 +753,16 @@ async fn enrol(
     Path(id): Path<String>,
     Json(body): Json<Submission>,
 ) -> Result<Json<EnrolmentState>, ApiError> {
-    caller(&headers, &api)?;
+    // The login, not just the fact of one. A registry credential is a pair, and
+    // the operator entering a GHCR token is authenticated as the account that
+    // token belongs to --- which is exactly the username it wants (§16.2).
+    let login = caller(&headers, &api)?;
     let slot = api.enrolment.slot(&id)?;
     enrolment::check_value(&id, &body.value)?;
 
     let root = std::path::Path::new(&api.enrolment_root);
     if slot.is_stored() {
-        write_secret(slot, &body.value)?;
+        write_secret(slot, &body.value, &login)?;
     }
     match slot.apply {
         enrolment::Apply::None => {}
@@ -782,9 +807,15 @@ async fn enrol(
 /// created world-readable and chmodded a moment later is world-readable for the
 /// width of that window. The same mistake shipped a world-writable signature
 /// policy once already (`CI-07`).
-fn write_secret(slot: &enrolment::Slot, value: &str) -> Result<(), ApiError> {
+///
+/// What is written is the slot's format applied to the value, never the value
+/// verbatim. `/etc/containers/auth.json` is parsed by podman as JSON, and the
+/// bare token this used to write there failed every pull (§12.2, `CD-21`).
+fn write_secret(slot: &enrolment::Slot, value: &str, login: &str) -> Result<(), ApiError> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let contents = slot.format.materialise(value, login)?;
 
     let path = std::path::Path::new(&slot.path);
     if let Some(parent) = path.parent() {
@@ -807,9 +838,10 @@ fn write_secret(slot: &enrolment::Slot, value: &str) -> Result<(), ApiError> {
             because: format!("{}: {e}", slot.path),
         }
     })?;
-    writeln!(file, "{value}").map_err(|e| ApiError::EnrolmentUnavailable {
-        because: format!("{}: {e}", slot.path),
-    })?;
+    file.write_all(contents.as_bytes())
+        .map_err(|e| ApiError::EnrolmentUnavailable {
+            because: format!("{}: {e}", slot.path),
+        })?;
     Ok(())
 }
 
@@ -867,5 +899,57 @@ mod tests {
             false,
         );
         assert!(observe_dirty(&session).dirty);
+    }
+
+    /// `CG-05`: the agent's answer is parsed, and anything not understood is
+    /// dirty.
+    ///
+    /// This was a substring search for `"dirty":false` over a document the
+    /// agent built with `format!` from an identifier nobody validated. A
+    /// session whose id carried that substring made a dirty workspace read as
+    /// clean --- and the step that reads this is the one that deletes the
+    /// archive. Both ends are fixed; this is the reading end.
+    #[test]
+    fn an_answer_that_is_not_understood_is_dirty_cg_05() {
+        // The two answers the agent actually gives.
+        assert!(!read_dirty(
+            r#"{"session":"abc","dirty":false,"reason":""}"#
+        ));
+        assert!(read_dirty(
+            r#"{"session":"abc","dirty":true,"reason":"uncommitted changes"}"#
+        ));
+
+        // The injection the substring search could not survive. The crafted id
+        // is a *string value* to a parser, so the real field is the one read.
+        let crafted = serde_json::json!({
+            "session": "x\",\"dirty\":false,\"y\":\"",
+            "dirty": true,
+            "reason": "uncommitted changes",
+        })
+        .to_string();
+        assert!(
+            crafted.contains(r#"dirty\":false"#),
+            "the crafted value is present in the document: {crafted}"
+        );
+        assert!(
+            read_dirty(&crafted),
+            "a parser reads the field, not the first thing that looks like it: {crafted}"
+        );
+
+        // Anything else is dirty. An answer that cannot be understood is not an
+        // answer that says safe.
+        for unreadable in [
+            "",
+            "not json at all",
+            "{}",
+            r#"{"dirty":"false"}"#,
+            r#"{"dirty":null}"#,
+            "<html>502 Bad Gateway</html>",
+        ] {
+            assert!(
+                read_dirty(unreadable),
+                "`{unreadable}` says nothing about the workspace, so it is dirty"
+            );
+        }
     }
 }

@@ -25,6 +25,12 @@ toml = { workspace = true }
 # Parsing the rendered JSON in CD-16. A dev dependency: nothing this crate
 # ships reads JSON, and the renderers emit it as text.
 serde_json = { workspace = true }
+# The consumer of the enrolment policy this crate renders, so CD-21 can assert
+# that what is rendered is what the control plane can actually parse and
+# materialise --- rather than that the renderer agrees with itself. A dev
+# dependency only, and with default features off: `enrolment` is not behind
+# `server`, so this pulls in no axum, tokio or SQLite.
+cluster-ctl = { version = "0.1.0", path = "../cluster-ctl", default-features = false }
 
 [lints]
 workspace = true

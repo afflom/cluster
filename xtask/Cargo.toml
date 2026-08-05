@@ -10,6 +10,10 @@ publish = false
 [dependencies]
 repo-model = { workspace = true }
 cluster-model = { workspace = true }
+# `installer-config` writes the configuration bootc-image-builder reads, and
+# proves the kickstart survives the round trip rather than merely that the file
+# parses. Both halves need a TOML reader.
+toml = { workspace = true }
 
 [lints]
 workspace = true

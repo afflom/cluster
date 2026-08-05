@@ -40,6 +40,17 @@ rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 # a rollout planner it will never run.
 cluster-updater = { version = "0.1.0", path = "../cluster-updater", optional = true }
 
+[dev-dependencies]
+# Driving the assembled `Router` --- middleware, extractors, routing table and
+# all --- so the HTTP surface is asserted over as a service rather than as a set
+# of functions somebody hopes are wired to it. Already in the graph: axum
+# depends on it, so this adds nothing new for `cargo deny` to weigh.
+tower = { version = "0.5.3", features = ["util"] }
+# The socket test writes an HTTP request onto a stream and reads the answer
+# back. `io-util` is not something the binary needs, so it is enabled here
+# rather than widening what ships.
+tokio = { version = "1", features = ["io-util"] }
+
 [[bin]]
 name = "cluster-ctl"
 path = "src/main.rs"

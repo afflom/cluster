@@ -293,6 +293,17 @@ rendered artifact.
 """
 
 [[id]]
+id = "CD-21"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+Every enrolled secret declares how its value becomes the file at its
+destination, and what is written is that format applied to the value rather than
+the value verbatim.
+"""
+
+[[id]]
 id = "CD-10"
 level = "build"
 suite = "definition"
@@ -653,6 +664,18 @@ The control plane reports which secrets a cluster has been given and never
 returns one, refuses an identifier it does not declare, and refuses a value that
 would append a line nobody typed. A cluster that has not been enrolled reads as
 not yet given rather than as broken.
+"""
+
+[[id]]
+id = "CC-10"
+level = "build"
+suite = "control"
+tier = "T0"
+statement = """
+A session identifier is refused unless every consumer of it can carry one ---
+the workspace directory, the URL path segment, the container name and the SSH
+alias --- and it is checked at the control plane and again at the agent rather
+than trusted across the boundary between them.
 """
 
 [[id]]

@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use repo_model::{codegen, Model};
 
 mod audit;
+mod installer;
 mod render;
 mod wiring;
 
@@ -28,6 +29,10 @@ fn main() -> ExitCode {
         "check-wiring" => wiring::check_wiring(&root),
         "audit-limits" => audit::audit_limits(&root),
         "audit-deferral" => audit::audit_deferral(&root),
+        "installer-config" => {
+            let output = installer::output_path(&root);
+            installer::installer_config(&root, &output).map(|_| ())
+        }
         "validate" => validate(&root),
         _ => {
             eprintln!(
@@ -39,9 +44,11 @@ fn main() -> ExitCode {
                  check-wiring      R1: nothing dangles and nothing rendered is inert\n\
                  audit-limits      R5: no error a caller sees that the model does not sanction\n\
                  audit-deferral    R4: no deferral marker, no stub, no capability behind a flag\n\
+                 installer-config  §12.1: fill bootstrap/config.toml with the rendered kickstart\n\
                  validate          run every gate above\n\
                  \n\
-                 --write           check-model and check-render: rewrite the generated files"
+                 --write           check-model and check-render: rewrite the generated files\n\
+                 --output PATH     installer-config: where to write (default iso/config.toml)"
             );
             return ExitCode::from(2);
         }

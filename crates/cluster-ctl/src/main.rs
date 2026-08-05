@@ -363,15 +363,15 @@ fn api_from_environment() -> Result<Api, ApiError> {
         authorizer: Arc::new(Authorizer::new(
             Box::new(GitHub {
                 user_url: env_or("CLUSTER_GITHUB_USER_URL", "https://api.github.com/user"),
-                timeout_s: u64::from(env_number("CLUSTER_AUTH_VALIDATION_TIMEOUT_S", 10)),
+                timeout_s: u64::from(env_number("CLUSTER_AUTH_VALIDATION_TIMEOUT_S", 10)?),
             }),
             env_list("CLUSTER_AUTHORIZED_LOGINS"),
-            u64::from(env_number("CLUSTER_AUTH_TOKEN_CACHE_TTL_S", 300)),
+            u64::from(env_number("CLUSTER_AUTH_TOKEN_CACHE_TTL_S", 300)?),
         )),
         thresholds: Thresholds {
-            notify_after_days: env_number("CLUSTER_RECLAIM_NOTIFY_DAYS", 14),
-            archive_after_days: env_number("CLUSTER_RECLAIM_ARCHIVE_DAYS", 30),
-            purge_after_days: env_number("CLUSTER_RECLAIM_PURGE_DAYS", 90),
+            notify_after_days: env_number("CLUSTER_RECLAIM_NOTIFY_DAYS", 14)?,
+            archive_after_days: env_number("CLUSTER_RECLAIM_ARCHIVE_DAYS", 30)?,
+            purge_after_days: env_number("CLUSTER_RECLAIM_PURGE_DAYS", 90)?,
         },
         nodes,
         allowed_origin: env_or("CLUSTER_ALLOWED_ORIGIN", "https://afflom.github.io"),
@@ -409,7 +409,7 @@ fn api_from_environment() -> Result<Api, ApiError> {
         capacity: Capacity {
             target: env_or("CLUSTER_MIGRATION_TARGET", "storage"),
             never_receives: env_list("CLUSTER_NEVER_RECEIVES"),
-            memory_cap_gib: env_number("CLUSTER_MIGRATION_MEMORY_CAP_GIB", 12),
+            memory_cap_gib: env_number("CLUSTER_MIGRATION_MEMORY_CAP_GIB", 12)?,
         },
     })
 }
@@ -418,11 +418,32 @@ fn env_or(key: &str, fallback: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| fallback.to_string())
 }
 
-fn env_number(key: &str, fallback: u32) -> u32 {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(fallback)
+/// A number from the environment, or a refusal.
+///
+/// **Absent is not the same as unreadable.** An absent key takes the documented
+/// default, which is what makes the unit file able to say less than everything.
+/// A key that is *present and not a number* is a misconfiguration, and it used
+/// to take the default silently.
+///
+/// That matters because of which numbers these are. `CLUSTER_RECLAIM_PURGE_DAYS`
+/// decides when somebody's archived work is deleted; a unit file carrying
+/// `ninety` would have been read as ninety days by an operator and as the
+/// compiled-in default by this binary, and the two agree only by luck. Every one
+/// of these is rendered from `model/policy.toml`, so a malformed one means the
+/// rendered tree and this binary disagree --- which is R1's failure, and it fails
+/// here rather than at the first deletion.
+fn env_number(key: &str, fallback: u32) -> Result<u32, ApiError> {
+    match std::env::var(key) {
+        Err(_) => Ok(fallback),
+        Ok(raw) => raw.trim().parse().map_err(|_| ApiError::NotPermitted {
+            attempted: format!("read {key} from the environment"),
+            because: format!(
+                "`{raw}` is not a number. It is rendered from model/policy.toml, so this \
+                 is the rendered unit and this binary disagreeing --- and these numbers \
+                 decide when work is deleted (§7.2, §15.3)"
+            ),
+        }),
+    }
 }
 
 fn env_list(key: &str) -> Vec<String> {
@@ -440,4 +461,66 @@ fn now_seconds() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A rendered number that is not a number is a refusal, not a default.
+    ///
+    /// Absent and unreadable are different conditions. An absent key takes the
+    /// documented default, which is what lets the unit file say less than
+    /// everything. A key that is present and malformed means the rendered unit
+    /// and this binary disagree --- and these are the numbers that decide when
+    /// somebody's archived work is deleted (§7.2, §15.3).
+    #[test]
+    fn a_malformed_threshold_is_refused_rather_than_defaulted() {
+        // Absent: the documented default.
+        std::env::remove_var("CLUSTER_TEST_NUMBER");
+        assert_eq!(env_number("CLUSTER_TEST_NUMBER", 90).unwrap(), 90);
+
+        // Present and readable, including with the whitespace a unit file
+        // rendering might leave.
+        std::env::set_var("CLUSTER_TEST_NUMBER", "30");
+        assert_eq!(env_number("CLUSTER_TEST_NUMBER", 90).unwrap(), 30);
+        std::env::set_var("CLUSTER_TEST_NUMBER", " 30 ");
+        assert_eq!(env_number("CLUSTER_TEST_NUMBER", 90).unwrap(), 30);
+
+        // Present and not a number. This used to be ninety days of retention
+        // that an operator had written as `ninety` and this binary had read as
+        // the default --- agreeing only by luck.
+        for malformed in ["ninety", "", "30d", "-1", "3.5"] {
+            std::env::set_var("CLUSTER_TEST_NUMBER", malformed);
+            let err = env_number("CLUSTER_TEST_NUMBER", 90)
+                .expect_err(&format!("`{malformed}` is not a number"));
+            assert_eq!(err.status(), 409);
+            assert!(
+                err.to_string().contains("CLUSTER_TEST_NUMBER"),
+                "the refusal names the key: {err}"
+            );
+        }
+        std::env::remove_var("CLUSTER_TEST_NUMBER");
+    }
+
+    /// A list is empty when the key is absent, and holds no blanks.
+    #[test]
+    fn a_list_from_the_environment_holds_no_blanks() {
+        std::env::remove_var("CLUSTER_TEST_LIST");
+        assert!(env_list("CLUSTER_TEST_LIST").is_empty());
+
+        std::env::set_var("CLUSTER_TEST_LIST", "");
+        assert!(
+            env_list("CLUSTER_TEST_LIST").is_empty(),
+            "an empty allowlist refuses everyone rather than admitting everyone"
+        );
+
+        std::env::set_var("CLUSTER_TEST_LIST", "afflom, someone , ,");
+        assert_eq!(
+            env_list("CLUSTER_TEST_LIST"),
+            vec!["afflom".to_string(), "someone".to_string()],
+            "a trailing comma does not add an empty login that would match an empty header"
+        );
+        std::env::remove_var("CLUSTER_TEST_LIST");
+    }
 }

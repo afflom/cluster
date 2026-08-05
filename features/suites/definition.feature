@@ -168,3 +168,12 @@ Feature: definition
     Then every declared secret appears with its destination and mode
     And no destination is writable beyond its owner
     And no model file or rendered artifact carries a value
+
+  @CD-21 @build
+  Scenario: A secret is written in the shape its destination reads
+    Given a registry credential whose destination is parsed as a JSON document
+    When the operator enters the token through the browser
+    Then what lands there is a document that parses, keyed by the declared registry
+    And the username in it is the login the device flow authenticated
+    And a value carrying JSON punctuation still produces a document that parses
+    And a secret declared raw is written verbatim, because its destination reads that

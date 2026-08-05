@@ -43,6 +43,7 @@ use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
 use cluster_init::addressing::Addressing;
+use cluster_init::boot::{self, write_private};
 use cluster_init::config::Config;
 use cluster_init::discovery::{self, Announcement};
 use cluster_init::links::{self, Classified, Port, Thresholds};
@@ -153,10 +154,20 @@ fn run() -> Result<String, InitError> {
             ordinal,
             &short,
             &role_id,
+            // Not `unwrap_or_default()`. Position zero is a real position ---
+            // the front of the rollout --- so a role the policy does not
+            // declare would have told every peer this machine updates first
+            // (§13.2). A grant naming an unknown role is the registrar and
+            // this node disagreeing about the model, which is a failed boot.
             config
                 .role(&role_id)
                 .map(|r| r.update_position)
-                .unwrap_or_default(),
+                .ok_or_else(|| {
+                    InitError::Registry(format!(
+                        "the registrar granted role `{role_id}`, which this node's policy \
+                         does not declare. Its rollout position would be a guess (§2.3, §13.2)"
+                    ))
+                })?,
             &loopback.to_string(),
         ),
     )?;
@@ -320,16 +331,11 @@ fn apply_role_kargs(role: &str) -> Result<(), InitError> {
     let path = format!("/usr/lib/cluster/role-kargs-{role}.conf");
     let text = std::fs::read_to_string(&path)
         .map_err(|e| InitError::Io(format!("reading {path}: {e}")))?;
-    let options = text
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("options="))
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    let options = boot::kargs_of(&text);
 
     let applied = Path::new(APPLIED_KARGS_PATH);
-    let last = std::fs::read_to_string(applied).unwrap_or_default();
-    if last.trim() == options {
+    let last = std::fs::read_to_string(applied).ok();
+    if !boot::kargs_need_applying(last.as_deref(), &options) {
         return Ok(());
     }
 
@@ -393,22 +399,7 @@ fn peers() -> Result<String, InitError> {
     // What this node already worked out about itself, at boot.
     let env = std::fs::read_to_string(Path::new(RUNTIME_DIR).join("node.env"))
         .map_err(|e| InitError::Io(format!("reading the node environment: {e}")))?;
-    let value = |key: &str| -> Option<String> {
-        env.lines()
-            .find_map(|l| l.trim().strip_prefix(&format!("{key}=")))
-            .map(str::to_string)
-    };
-    let ordinal: u32 = value("CLUSTER_ORDINAL")
-        .and_then(|v| v.parse().ok())
-        .ok_or_else(|| {
-            InitError::Config(
-                "the node environment carries no ordinal, so cluster-init has not run \
-                 (§2.3.2)"
-                    .into(),
-            )
-        })?;
-    let role_id = value("CLUSTER_ROLE")
-        .ok_or_else(|| InitError::Config("the node environment carries no role (§2.3)".into()))?;
+    let (ordinal, role_id) = boot::own_identity(&env)?;
     let machine_id = std::fs::read_to_string(config.string("machine_id_path")?)
         .map_err(|e| InitError::Io(format!("reading the machine id: {e}")))?
         .trim()
@@ -596,28 +587,4 @@ fn load_or_create_secret() -> Result<String, InitError> {
             Ok(secret)
         }
     }
-}
-
-/// Write a file only root can read.
-///
-/// The secret and the registry both go through here. `0600` set *before* the
-/// content lands, because a file created world-readable and narrowed afterwards
-/// is world-readable for the width of that window.
-fn write_private(path: &Path, content: &str) -> Result<(), InitError> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|e| InitError::Io(format!("writing {}: {e}", path.display())))?;
-    file.write_all(content.as_bytes())
-        .map_err(|e| InitError::Io(format!("writing {}: {e}", path.display())))?;
-    Ok(())
 }

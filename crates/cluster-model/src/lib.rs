@@ -946,6 +946,61 @@ impl Cluster {
                     secret.id, secret.apply
                 )));
             }
+
+            // How the value becomes the file (§12.2). The registry token was
+            // written verbatim into a JSON document podman parses, so every
+            // pull failed --- unattended, at the next update, with the cause
+            // three layers from the symptom. A format the control plane does
+            // not implement fails here instead.
+            if !crate::policy::SECRET_FORMATS.contains(&secret.format.as_str()) {
+                return Err(bad(format!(
+                    "secret `{}`: format `{}` is not one the control plane can \
+                     materialise. It knows {} (§12.2)",
+                    secret.id,
+                    secret.format,
+                    crate::policy::SECRET_FORMATS.join(", ")
+                )));
+            }
+            if secret.format == "docker-auth" {
+                if secret.registry.is_empty() {
+                    return Err(bad(format!(
+                        "secret `{}`: a docker-auth document is keyed by registry and \
+                         this row names none, so nothing could look the credential up \
+                         (§12.2)",
+                        secret.id
+                    )));
+                }
+                if !secret.is_stored() {
+                    return Err(bad(format!(
+                        "secret `{}`: a docker-auth document is a file, and this row \
+                         declares no destination for it (§12.2)",
+                        secret.id
+                    )));
+                }
+            } else if !secret.registry.is_empty() {
+                return Err(bad(format!(
+                    "secret `{}`: format `{}` builds no document, so the registry \
+                     `{}` names nothing (§12.2)",
+                    secret.id, secret.format, secret.registry
+                )));
+            }
+            // `@` separates the format from the registry in the rendered row, so
+            // one inside either field would split into fields nobody declared.
+            if secret.format.contains('@') || secret.registry.contains('@') {
+                return Err(bad(format!(
+                    "secret `{}`: `@` separates the format from the registry in the \
+                     rendered policy, and neither field may contain one (§12.2)",
+                    secret.id
+                )));
+            }
+            if secret.registry.contains('/') {
+                return Err(bad(format!(
+                    "secret `{}`: registry `{}` carries a path. A containers-auth \
+                     document is keyed by host, and podman would not find a key with \
+                     a path in it (§12.2)",
+                    secret.id, secret.registry
+                )));
+            }
         }
 
         if self.policy.rollout.peer_health_port != self.policy.health.port {

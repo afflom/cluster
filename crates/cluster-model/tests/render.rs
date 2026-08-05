@@ -1373,6 +1373,76 @@ fn read_crate_source(name: &str) -> String {
     out
 }
 
+/// `CD-21`: every rendered row is one the control plane can actually read, and
+/// what it writes is the format applied to the value.
+///
+/// Asserted against `cluster_ctl::enrolment` rather than against this crate's
+/// own idea of the format, because the failure this catches is precisely the two
+/// sides disagreeing. The renderer emitting a row the parser rejects is a
+/// control plane that will not start; the renderer emitting a format the parser
+/// accepts and materialises differently is worse, because it starts.
+fn the_rendered_policy_is_one_the_control_plane_can_read(c: &cluster_model::Cluster, body: &str) {
+    use cluster_ctl::enrolment::{Enrolment, Format};
+
+    let read = Enrolment::parse(body).expect(
+        "the control plane parses this file at startup; a row it rejects is a node whose \
+         control plane does not come up (§12.2)",
+    );
+    assert_eq!(
+        read.ids(),
+        c.policy
+            .secret
+            .iter()
+            .map(|s| s.id.clone())
+            .collect::<Vec<_>>(),
+        "every declared secret reaches the control plane, in declaration order"
+    );
+
+    for secret in &c.policy.secret {
+        let slot = read.slot(&secret.id).expect("it parsed");
+        assert_eq!(slot.mode, secret.mode_bits().expect("octal"));
+        assert_eq!(slot.path, secret.path);
+
+        match &slot.format {
+            Format::Raw => assert!(
+                secret.registry.is_empty(),
+                "`{}` builds no document, so its registry names nothing",
+                secret.id
+            ),
+            Format::DockerAuth { registry } => {
+                assert_eq!(
+                    registry, &secret.registry,
+                    "`{}`: the document is keyed by the registry the model declares",
+                    secret.id
+                );
+                // And what lands there is a document podman can parse. The bare
+                // token this used to write failed every pull --- unattended, at
+                // the next update, three layers from its cause.
+                let written = slot
+                    .format
+                    .materialise("a-token", "an-operator")
+                    .expect("it materialises");
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&written).unwrap_or_else(|e| {
+                        panic!(
+                            "`{}` lands at {}, which podman parses as JSON, and what would be \
+                         written there is not JSON: {e}",
+                            secret.id, secret.path
+                        )
+                    });
+                assert!(
+                    parsed["auths"][registry]["auth"].is_string(),
+                    "keyed by {registry}: {written}"
+                );
+                assert!(
+                    !written.contains("a-token"),
+                    "the credential appears only inside the encoded pair: {written}"
+                );
+            }
+        }
+    }
+}
+
 /// `CD-20`: the enrolled secrets are declared by destination, never by value.
 ///
 /// The row says where a value goes. The values arrive once, through the browser,
@@ -1395,8 +1465,12 @@ fn the_enrolled_secrets_are_declared_by_destination_cd_20() {
     );
     for secret in &c.policy.secret {
         let row = format!(
-            "secret={}:{}:{}:{}",
-            secret.id, secret.path, secret.mode, secret.apply
+            "secret={}:{}:{}:{}:{}",
+            secret.id,
+            secret.path,
+            secret.mode,
+            secret.apply,
+            secret.rendered_format()
         );
         assert!(
             policy.body.contains(&row),
@@ -1465,6 +1539,8 @@ fn the_enrolled_secrets_are_declared_by_destination_cd_20() {
             "sshd's default must be kept alongside: {searched:?}"
         );
     }
+
+    the_rendered_policy_is_one_the_control_plane_can_read(&c, &policy.body);
 
     // And no value anywhere. The whole point of enrolment is that this
     // repository is public and these do not belong in it (§9.1).

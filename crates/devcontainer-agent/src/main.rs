@@ -86,50 +86,7 @@ fn handle(stream: &mut TcpStream) {
     }
     let mut parts = request.split_whitespace();
     let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-
-    let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
-    let (status, body) = match (method, segments.as_slice()) {
-        ("GET", ["workspaces"]) => (200, hosted()),
-        // §15.1's primary attachment signal. The control plane asks; only this
-        // node can see the process table the answer comes from.
-        ("GET", ["workspaces", _id, "attached"]) => {
-            (200, format!("{{\"attached\":{}}}", observe_attachment()))
-        }
-        // §15.3: unregister before archiving. Tunnel names are globally unique
-        // per account, so an archive that left the name registered collides with
-        // any session later recreated under the same id --- and the collision
-        // shows up as an editor that will not connect, a long way from its cause.
-        ("POST", ["workspaces", id, "unregister"]) => match unregister(id) {
-            Ok(()) => (
-                200,
-                format!("{{\"session\":\"{id}\",\"unregistered\":true}}"),
-            ),
-            Err(e) => (500, format!("{{\"error\":\"{e}\"}}")),
-        },
-        ("GET", ["workspaces", id, "dirty"]) => {
-            // Computed now, from the worktree, every time. §15.2 forbids a
-            // cached answer, and a cache here would be the one place the whole
-            // dirty protection could quietly stop working.
-            let state = is_dirty(&workspace_of(id));
-            (
-                200,
-                format!(
-                    "{{\"session\":\"{id}\",\"dirty\":{},\"reason\":\"{}\"}}",
-                    state.is_dirty(),
-                    state.reason()
-                ),
-            )
-        }
-        ("POST", ["workspaces", id, "attached"]) => match record_attachment(id) {
-            Ok(()) => (200, format!("{{\"session\":\"{id}\",\"attached\":true}}")),
-            Err(e) => (503, format!("{{\"error\":\"{e}\"}}")),
-        },
-        ("POST", ["workspaces", id, "migrate"]) => match migrate(id) {
-            Ok(steps) => (200, format!("{{\"session\":\"{id}\",\"steps\":{steps}}}")),
-            Err(e) => (500, format!("{{\"error\":\"{e}\"}}")),
-        },
-        _ => (404, "{}".to_string()),
-    };
+    let (status, body) = answer(method, path);
 
     let _ = write!(
         stream,
@@ -142,24 +99,120 @@ fn handle(stream: &mut TcpStream) {
     );
 }
 
+/// Route one request and produce its body.
+///
+/// Split from the socket so the routing table and every body this agent emits
+/// are testable without one. The bodies matter more than they look: the control
+/// plane's decision to *delete an archive* is taken from the `dirty` field of
+/// one of them.
+///
+/// # Every body is serialised, never formatted
+///
+/// These were built with `format!`, interpolating the session identifier and
+/// error strings straight into JSON. Two ways that fails. An error carrying a
+/// quote produced a body that would not parse. And an identifier carrying
+/// `","dirty":false,"x":"` produced a body with that substring in it --- which
+/// is exactly what the control plane used to search for, so a dirty workspace
+/// read as clean and its archive was eligible for purging.
+///
+/// Both ends are fixed: the control plane parses rather than searches, and
+/// nothing here concatenates JSON.
+fn answer(method: &str, path: &str) -> (u16, String) {
+    let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
+
+    // The identifier is re-checked here, at this process's own boundary, rather
+    // than trusted because the control plane checks it too. It arrives as a URL
+    // path segment from another machine, and it goes on to become a directory
+    // name under the workspace root --- where `..` would leave that root
+    // entirely, and the dirty computation and the migration both read from it.
+    let checked = |id: &str| cluster_ctl::session::check_session_id(id).is_ok();
+
+    match (method, segments.as_slice()) {
+        ("GET", ["workspaces"]) => (200, hosted()),
+        // §15.1's primary attachment signal. The control plane asks; only this
+        // node can see the process table the answer comes from.
+        ("GET", ["workspaces", _id, "attached"]) => (
+            200,
+            body(&serde_json::json!({ "attached": observe_attachment() })),
+        ),
+        (_, ["workspaces", id, _]) if !checked(id) => (
+            400,
+            body(&serde_json::json!({
+                "error": "the session identifier is not one this agent will use as a \
+                          directory name, a container name or an alias (§15.1)"
+            })),
+        ),
+        // §15.3: unregister before archiving. Tunnel names are globally unique
+        // per account, so an archive that left the name registered collides with
+        // any session later recreated under the same id --- and the collision
+        // shows up as an editor that will not connect, a long way from its cause.
+        ("POST", ["workspaces", id, "unregister"]) => match unregister(id) {
+            Ok(()) => (
+                200,
+                body(&serde_json::json!({ "session": id, "unregistered": true })),
+            ),
+            Err(e) => (500, body(&serde_json::json!({ "error": e.to_string() }))),
+        },
+        ("GET", ["workspaces", id, "dirty"]) => {
+            // Computed now, from the worktree, every time. §15.2 forbids a
+            // cached answer, and a cache here would be the one place the whole
+            // dirty protection could quietly stop working.
+            let state = is_dirty(&workspace_of(id));
+            (
+                200,
+                body(&serde_json::json!({
+                    "session": id,
+                    "dirty": state.is_dirty(),
+                    "reason": state.reason(),
+                })),
+            )
+        }
+        ("POST", ["workspaces", id, "attached"]) => match record_attachment(id) {
+            Ok(()) => (
+                200,
+                body(&serde_json::json!({ "session": id, "attached": true })),
+            ),
+            Err(e) => (503, body(&serde_json::json!({ "error": e.to_string() }))),
+        },
+        ("POST", ["workspaces", id, "migrate"]) => match migrate(id) {
+            Ok(steps) => (
+                200,
+                body(&serde_json::json!({ "session": id, "steps": steps })),
+            ),
+            Err(e) => (500, body(&serde_json::json!({ "error": e.to_string() }))),
+        },
+        _ => (404, "{}".to_string()),
+    }
+}
+
+/// Serialise a body.
+///
+/// A map of strings and booleans cannot fail to serialise, but an `expect` here
+/// would be a panic in the responder that answers whether somebody's work is
+/// safe to delete. An unserialisable body becomes an empty object, which the
+/// control plane reads as *dirty* --- the safe reading.
+fn body(value: &serde_json::Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
+}
+
 /// The sessions this node is hosting, for a drain to enumerate.
+///
+/// A directory whose name is not a valid identifier is left out rather than
+/// listed: this walks a directory, so the names are whatever is on the disk,
+/// and a drain that tried to migrate one would build a path from it.
 fn hosted() -> String {
     let root = PathBuf::from(env_or("AGENT_WORKSPACES", "/var/lib/devcontainers"));
     let Ok(entries) = std::fs::read_dir(&root) else {
-        return "{\"workspaces\":[]}".to_string();
+        return body(&serde_json::json!({ "workspaces": [] }));
     };
     let mut names: Vec<String> = entries
         .flatten()
         .filter(|e| e.path().is_dir())
         .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| cluster_ctl::session::check_session_id(n).is_ok())
         .collect();
     names.sort();
-    let list = names
-        .iter()
-        .map(|n| format!("\"{n}\""))
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("{{\"workspaces\":[{list}]}}")
+    body(&serde_json::json!({ "workspaces": names }))
 }
 
 fn workspace_of(session: &str) -> PathBuf {
@@ -310,4 +363,77 @@ fn digest_of(session: &str) -> Result<String, AgentError> {
 
 fn env_or(key: &str, fallback: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| fallback.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every body this agent emits is JSON, whatever it was given.
+    ///
+    /// They were built with `format!`, so an identifier or an error carrying a
+    /// quote produced a document that would not parse --- and the control plane
+    /// reads one of these to decide whether an archive may be deleted.
+    #[test]
+    fn every_answer_is_a_document_that_parses() {
+        // The routes, and the two that take no identifier.
+        let routed = [
+            ("GET", "/workspaces"),
+            ("GET", "/workspaces/abc123/attached"),
+            ("GET", "/workspaces/abc123/dirty"),
+            ("GET", "/nothing/here"),
+            ("POST", "/workspaces/abc123/unregister"),
+            ("POST", "/workspaces/abc123/attached"),
+            ("DELETE", "/workspaces/abc123/dirty"),
+        ];
+        for (method, path) in routed {
+            let (status, body) = answer(method, path);
+            serde_json::from_str::<serde_json::Value>(&body)
+                .unwrap_or_else(|e| panic!("{method} {path} answered {status} with {body}: {e}"));
+        }
+    }
+
+    /// `CC-10`: an identifier this agent will not use is refused at its own
+    /// boundary, not trusted because the control plane checked it.
+    ///
+    /// It arrives as a URL path segment from another machine and becomes a
+    /// directory name under the workspace root --- where `..` leaves that root
+    /// entirely, and the dirty computation and the migration both read from it.
+    #[test]
+    fn an_identifier_this_agent_will_not_use_is_refused_cc_10() {
+        for path in [
+            "/workspaces/..%2f..%2fetc/dirty",
+            "/workspaces/../dirty",
+            "/workspaces/a b/dirty",
+            "/workspaces/UPPER/dirty",
+            "/workspaces/x\",\"dirty\":false,\"y\":\"/dirty",
+        ] {
+            let (status, body) = answer("GET", path);
+            assert_eq!(status, 400, "{path} must be refused, not served: {body}");
+            let parsed: serde_json::Value = serde_json::from_str(&body).expect("still JSON");
+            assert!(
+                parsed.get("dirty").is_none(),
+                "a refusal says nothing about a workspace, so the control plane reads it \
+                 as dirty: {body}"
+            );
+        }
+
+        // And a well-formed one still routes.
+        let (status, _) = answer("GET", "/workspaces/abc123/dirty");
+        assert_eq!(status, 200);
+    }
+
+    /// A `..` that reached `workspace_of` would leave the workspace root, which
+    /// is where the dirty computation reads and the migration copies from.
+    #[test]
+    fn a_workspace_path_stays_under_its_root() {
+        let root = PathBuf::from(env_or("AGENT_WORKSPACES", "/var/lib/devcontainers"));
+        // Only identifiers that passed the check ever reach this function, and
+        // none of them can climb: no dots, no separators.
+        for id in ["abc123", "my-project-2"] {
+            let path = workspace_of(id);
+            assert_eq!(path.parent(), Some(root.as_path()));
+            assert!(cluster_ctl::session::check_session_id(id).is_ok());
+        }
+    }
 }

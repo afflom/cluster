@@ -210,3 +210,138 @@ impl Applier for SystemApplier {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn applier(registries: Vec<String>, state_path: String) -> SystemApplier {
+        SystemApplier {
+            registries,
+            image: "ghcr.io/afflom/cluster/node".to_string(),
+            tag: "stable".to_string(),
+            state_path,
+            control_plane: "http://127.0.0.1:8080".to_string(),
+            node: "node2".to_string(),
+        }
+    }
+
+    /// `CU-01`: an unresolved target is a reported failure, never "no update
+    /// available".
+    ///
+    /// Treating it as one would pin a node to whatever it last booted and make
+    /// an outage look like a policy decision --- silently, and for as long as
+    /// the network was down.
+    #[test]
+    fn no_registry_answering_is_a_failure_and_not_a_decision_cu_01() {
+        // No registries at all: nothing was asked, so nothing answered.
+        let error = applier(Vec::new(), String::new())
+            .resolve_target()
+            .expect_err("nothing could have answered");
+        assert!(matches!(error.stage, Stage::Resolve));
+        assert!(
+            error.attempted.contains("stable"),
+            "it names what it tried to resolve: {error:?}"
+        );
+
+        // Registries that exist and cannot answer. `skopeo` is not installed in
+        // a test environment, which is itself one of the ways this fails on a
+        // node --- and it must fail the same way.
+        let error = applier(
+            vec!["ghcr.io".to_string(), "10.10.255.1:5000".to_string()],
+            String::new(),
+        )
+        .resolve_target()
+        .expect_err("neither registry answers here");
+        assert!(matches!(error.stage, Stage::Resolve));
+        assert!(
+            error.because.contains("ghcr.io") && error.because.contains("10.10.255.1:5000"),
+            "every attempt is reported, not only the last: {}",
+            error.because
+        );
+    }
+
+    /// `CU-02`: a node publishes its rollout state where peers read it (§13.2).
+    ///
+    /// Written under `/var`, which the bootc filesystem contract makes writable
+    /// and persistent across image transitions (§5.2).
+    #[test]
+    fn the_published_state_is_the_token_a_peer_reads_cu_02() {
+        let dir = std::env::temp_dir().join(format!("cluster-updater-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("state");
+        let a = applier(Vec::new(), path.to_string_lossy().to_string());
+
+        for state in [
+            cluster_health::State::Idle,
+            cluster_health::State::Draining,
+            cluster_health::State::Updating,
+        ] {
+            a.publish_state(state).expect("it is published");
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("a peer can read it"),
+                state.as_str(),
+                "the token, and nothing around it: a peer parses this exactly"
+            );
+        }
+
+        // A path that cannot be written is a reported condition rather than a
+        // silent failure to publish --- a peer that reads nothing halts, and a
+        // node that thought it had published would be the reason.
+        let unwritable = applier(
+            Vec::new(),
+            dir.join("no-such-directory/state")
+                .to_string_lossy()
+                .to_string(),
+        );
+        let error = unwritable
+            .publish_state(cluster_health::State::Updating)
+            .expect_err("the directory does not exist");
+        assert!(matches!(error.stage, Stage::Observe));
+        assert!(error.attempted.contains("updating"), "{error:?}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `CU-03`: verification failure is a halt, and it says what the policy is
+    /// for.
+    ///
+    /// §12.3's policy is the only thing standing between a node and an
+    /// arbitrary image, applied unattended with no operator present.
+    #[test]
+    fn a_digest_that_does_not_verify_halts_cu_03() {
+        let error = applier(Vec::new(), String::new())
+            .verify("sha256:0000000000000000000000000000000000000000000000000000000000000000")
+            .expect_err("nothing here can verify a signature");
+        assert!(matches!(error.stage, Stage::Verify));
+        assert!(
+            error.attempted.contains("sha256:0000"),
+            "it names the digest it refused: {error:?}"
+        );
+    }
+
+    /// Every stage a failure can carry is one a reader can act on, and the
+    /// message never loses which stage it was.
+    #[test]
+    fn every_rollout_failure_names_its_stage() {
+        for stage in [
+            Stage::Resolve,
+            Stage::Verify,
+            Stage::Observe,
+            Stage::Apply,
+            Stage::Quarantine,
+        ] {
+            let error = RolloutError {
+                stage,
+                attempted: "something".to_string(),
+                because: "a reason".to_string(),
+            };
+            let text = error.to_string();
+            assert!(!text.is_empty());
+            assert!(
+                text.contains("something") && text.contains("a reason"),
+                "a failure says what was attempted and why: {text}"
+            );
+        }
+    }
+}

@@ -7,7 +7,8 @@ vv: fmt-check model lint test features bdd
     @echo "vv: the acceptance gate passed"
 
 # R1, R4, R5 --- the repository gates, each falsifiable. `validate` runs
-# check-model, check-render, audit-limits and audit-deferral in that order.
+# check-model, check-render, check-wiring, audit-limits and audit-deferral in
+# that order.
 model:
     cargo run -q -p xtask -- validate
 

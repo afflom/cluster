@@ -126,6 +126,85 @@ kickstart has newlines and a single-quoted TOML string cannot --- and that no
 retired secret placeholder comes back. Both original defects were re-planted and
 both fire.
 
+**And `CL-08` was then itself found to be covering a copy.** It read
+`promote.yml`, confirmed the workflow mentioned the placeholder and the kickstart
+path, and then performed *its own* substitution in Rust and asserted the result
+parsed. So it established that the escaping the test author wrote was sound. It
+could not have caught the shipping escaping being wrong, because it never ran it
+--- and the shipping escaping had already been wrong once. A gate that tests a
+reimplementation of the thing is green while the thing is broken.
+
+The substitution is a workspace task now, `cargo xtask installer-config`:
+compiled, linted, unit-tested against the seven character sequences that break a
+TOML basic string, and invoked by `promote.yml` and by `CL-08` alike. It parses
+back what it wrote and compares it against the kickstart it substituted, so what
+the builder reads is byte for byte what `just render` produced --- which is a
+stronger statement than "it parses", and the one that matters.
+
+## What a hardening pass found
+
+Four defects, none of which any gate would have reported, and all four in
+features that were built rather than deferred --- which is the failure mode R4
+does not cover. A capability can be complete, wired, rendered and asserted over,
+and still only work for the one input its author had in mind.
+
+**The registry credential could not have worked.** `registry_pull_token` was
+declared to land at `/etc/containers/auth.json`, and the value an operator enters
+is a token. podman parses that file as JSON. The token was written verbatim, so
+every pull would have failed --- unattended, at the next update, three layers from
+its cause, on a cluster whose whole update story is §13's. The model now declares
+how a value becomes a file (`format`) separately from where it goes, and the
+document is built with the enrolling operator's GitHub login as the username,
+which is exactly the pair ghcr.io wants and is already authenticated (`CD-21`).
+
+**A session identifier was a trust boundary nobody checked.** It becomes a
+directory under the workspace root, a URL path segment the agent is asked for, a
+`podman exec` container name and the `dc-` SSH alias --- and the only check at
+creation was that no session already had it. `..` in one is a traversal out of
+the root the dirty computation reads from. Worse, the agent built its answers
+with `format!` and the control plane read them with
+`!text.contains("\"dirty\":false")`: an identifier carrying that substring made a
+dirty workspace read as clean, and the step that reads it is the one that deletes
+the archive. Both ends are fixed --- identifiers are checked at the control plane
+and again at the agent, nothing concatenates JSON, and the answer is parsed
+(`CC-10`, `CG-05`).
+
+**`cluster-init` narrowed a file's mode only when creating it.**
+`OpenOptions::mode` applies at creation, so the join secret, the registrar's
+assignments and the applied kernel arguments kept whatever mode they were first
+written with, for the life of the machine. The control plane's own secret writer
+had already learned this and carried both lines; this one had only the first.
+
+**A malformed retention threshold took the default silently.**
+`CLUSTER_RECLAIM_PURGE_DAYS=ninety` read as ninety days to an operator and as the
+compiled-in default to the binary, and they agree only by luck. Absent and
+unreadable are now different conditions: absent takes the documented default, and
+present-and-unparseable refuses to start.
+
+## What had never been driven
+
+`cluster-ctl`'s HTTP surface --- sixteen routes, an authorization gate, a
+cross-origin layer and an asset server --- had two tests, and one of them built
+the response struct *by hand inside the test* and asserted over its own
+construction. The handler it was named for could have returned anything.
+
+Nothing had ever sent a request through the router. `tests/api.rs` now assembles
+the real service and drives it: every state-changing route refused without a
+credential and refused again for an unlisted login, the preflight answered
+without reaching a handler, the exact origin on every response, four traversals
+refused by the mirror, the lifecycle transitions, the dirty archive held, and
+enrolment writing each declared shape and reporting presence without ever
+returning a value. One test binds a socket and speaks HTTP over TCP, because the
+routes are one thing and a server that listens is another.
+
+Two more suites were counting on assertions that could not fail. The token cache
+test asserted only that each call still returned `Ok`, which is equally true of a
+working cache, a cache that never expires, and no cache at all; it now counts
+what the identity provider was asked. And `CC-02` enumerated five of `ApiError`'s
+eight variants in a list --- the three it missed were the three most recently
+added, which is exactly how a list-shaped exhaustiveness check fails. It is built
+from a `match` now, so a new variant is a compile error.
+
 ## Every gate is falsifiable
 
 A gate nobody has seen fail is indistinguishable from a gate that cannot. Before
@@ -160,6 +239,27 @@ here.
 | `CI-07` | a world-writable `policy.json` in the rendered tree | yes, naming the file and the mode |
 | `CL-08` | a placeholder in the ISO config that nothing fills | yes, naming it and what would ship |
 | `CL-08` | the single-quoted TOML string the kickstart cannot fit in | yes, as a parse failure |
+| `installer-config` | an escaper that leaves a quote unescaped | yes, in the task's own unit test |
+| `CD-21` | the registry token written verbatim into a file podman parses | yes, as invalid JSON |
+| `CC-01` (over the router) | one handler dropping its authorization gate | yes, naming the route and the status |
+| `CC-02` (over the router) | the mirror no longer refusing a traversal | yes, serving a file above the root |
+| `CC-08` | a wildcard cross-origin reaching a response header | yes |
+| `CC-10` | session identifiers no longer validated at creation | yes, naming `../../etc` |
+| `CG-05` | the dirty answer read by substring rather than parsed | yes |
+| `CG-05` | an unreadable answer treated as clean | yes |
+| `cluster-init` `write_private` | a mode set at creation and not narrowed on rewrite | yes, reading the mode back |
+| `env_number` | a malformed retention threshold silently taking the default | yes, naming the key |
+
+**A second plant did not fire, and the reason is worth stating.** Breaking the
+installer escaper so that it stops escaping quotes leaves `CL-08` green. That is
+correct rather than a gap: the committed kickstart's twelve quote characters are
+all legal unescaped inside a TOML multi-line basic string --- none forms a run of
+three and none abuts the delimiter --- so the file the release path produces
+really is right for this input, and `CL-08` asserts about *this* kickstart. What
+covers the escaper across inputs is `installer-config`'s own unit test, which
+feeds it the seven shapes that do break a basic string, and that one fires. The
+division is deliberate: a claim about the artifact, and a claim about the
+function that builds it.
 
 **One plant did not fire, and that was the finding.** `CL-01` asserted the
 rendered policy's certificate identity "contains the workflow" --- and

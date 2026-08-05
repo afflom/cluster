@@ -46,6 +46,117 @@ pub struct Slot {
     pub mode: u32,
     /// What happens after it is written.
     pub apply: Apply,
+    /// How the entered value becomes the file's bytes.
+    pub format: Format,
+}
+
+/// How an entered value becomes the file at its destination (§12.2).
+///
+/// Separate from [`Slot::path`], and the separation is the point. An operator
+/// enters a credential; most destinations want exactly that credential and one
+/// wants a document built around it. Writing the entered string verbatim into
+/// every destination is what made the registry token useless: podman parses
+/// `/etc/containers/auth.json` as JSON, so a bare token there is a parse error
+/// on every pull --- unattended, at the next update, a long way from the
+/// browser form where it was typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Format {
+    /// The value is the file.
+    Raw,
+    /// The value is a password in a containers-auth document keyed by this
+    /// registry. The username is the login the device flow authenticated.
+    DockerAuth {
+        /// The registry host the document is keyed by, port included.
+        registry: String,
+    },
+}
+
+impl Format {
+    /// Parse the rendered field: `raw`, or `docker-auth@<registry>`.
+    ///
+    /// The registry rides behind an `@` rather than in a field of its own
+    /// because a registry may carry a port, and the row is colon-separated.
+    fn parse(field: &str, line: usize) -> Result<Self, ApiError> {
+        let (name, registry) = field.split_once('@').unwrap_or((field, ""));
+        match (name, registry) {
+            ("raw", "") => Ok(Self::Raw),
+            ("docker-auth", "") => Err(ApiError::EnrolmentUnavailable {
+                because: format!(
+                    "line {line}: a docker-auth document is keyed by registry and this \
+                     row names none"
+                ),
+            }),
+            ("docker-auth", registry) => Ok(Self::DockerAuth {
+                registry: registry.to_string(),
+            }),
+            (other, _) => Err(ApiError::EnrolmentUnavailable {
+                because: format!(
+                    "line {line}: `{other}` is not a format this control plane can \
+                     materialise"
+                ),
+            }),
+        }
+    }
+
+    /// The bytes that land at the destination.
+    ///
+    /// `login` is who the device flow authenticated. For a registry document
+    /// that is exactly the username the pair wants: the operator entering a
+    /// GHCR token is authenticated as the account it belongs to (§16.2).
+    ///
+    /// The document is built by a serialiser, never by `format!`. A password
+    /// carrying a quote or a backslash would otherwise produce a file podman
+    /// cannot parse, and the operator would be told the value was accepted.
+    pub fn materialise(&self, value: &str, login: &str) -> Result<String, ApiError> {
+        match self {
+            Self::Raw => Ok(format!("{value}\n")),
+            Self::DockerAuth { registry } => {
+                let document = serde_json::json!({
+                    "auths": {
+                        registry: { "auth": base64(format!("{login}:{value}").as_bytes()) }
+                    }
+                });
+                serde_json::to_string_pretty(&document)
+                    .map(|mut s| {
+                        s.push('\n');
+                        s
+                    })
+                    // Serialising a map of strings cannot fail, but an
+                    // `expect` here would be a panic in a request handler on
+                    // the one node that has a control plane.
+                    .map_err(|e| ApiError::EnrolmentUnavailable {
+                        because: format!("building the registry credential document: {e}"),
+                    })
+            }
+        }
+    }
+}
+
+/// Standard base64, as a containers-auth document wants it.
+///
+/// Written here rather than taken as a dependency: it is twenty lines with an
+/// exact oracle, and R6 makes every arriving crate something to justify. The
+/// test checks it against RFC 4648's own vectors.
+fn base64(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in 0..4 {
+            // One padding character per byte the final chunk was short.
+            if i > chunk.len() {
+                out.push('=');
+            } else {
+                out.push(ALPHABET[(n >> (18 - 6 * i)) as usize & 0x3f] as char);
+            }
+        }
+    }
+    out
 }
 
 /// What applying a secret does beyond writing it.
@@ -94,21 +205,25 @@ pub struct Submission {
 impl Enrolment {
     /// Parse the rendered enrolment policy.
     ///
-    /// `secret=id:path:mode:apply`, with `#` comments --- the same shape as every
-    /// other rendered policy in this repository, for the same reason: a
+    /// `secret=id:path:mode:apply:format`, with `#` comments --- the same shape
+    /// as every other rendered policy in this repository, for the same reason: a
     /// destination in both the model and a binary is two sources for it.
+    ///
+    /// The format field is split off last, so a registry carrying a port keeps
+    /// its colon.
     pub fn parse(text: &str) -> Result<Self, ApiError> {
-        let mut slots = Vec::new();
+        let mut slots: Vec<Slot> = Vec::new();
         for (number, line) in text.lines().enumerate() {
             let line = line.trim();
             let Some(row) = line.strip_prefix("secret=") else {
                 continue;
             };
-            let parts: Vec<&str> = row.split(':').collect();
-            let [id, path, mode, apply] = parts.as_slice() else {
+            let parts: Vec<&str> = row.splitn(5, ':').collect();
+            let [id, path, mode, apply, format] = parts.as_slice() else {
                 return Err(ApiError::EnrolmentUnavailable {
                     because: format!(
-                        "line {}: `{row}` needs four colon-separated fields",
+                        "line {}: `{row}` needs five colon-separated fields, \
+                         id:path:mode:apply:format",
                         number + 1
                     ),
                 });
@@ -130,11 +245,34 @@ impl Enrolment {
                     })
                 }
             };
+            let format = Format::parse(format, number + 1)?;
+
+            // A destination that is not absolute would be resolved against
+            // whatever directory the unit happened to start in, which is not a
+            // place anybody declared.
+            if !path.is_empty() && !path.starts_with('/') {
+                return Err(ApiError::EnrolmentUnavailable {
+                    because: format!(
+                        "line {}: `{path}` is not an absolute destination",
+                        number + 1
+                    ),
+                });
+            }
+            // Two rows with one identifier is a form where the second entry
+            // silently does nothing, or overwrites the first --- and which
+            // depends on an ordering nobody chose.
+            if slots.iter().any(|s| s.id == *id) {
+                return Err(ApiError::EnrolmentUnavailable {
+                    because: format!("line {}: `{id}` is declared twice", number + 1),
+                });
+            }
+
             slots.push(Slot {
                 id: (*id).to_string(),
                 path: (*path).to_string(),
                 mode,
                 apply,
+                format,
             });
         }
         if slots.is_empty() {
@@ -265,9 +403,9 @@ mod tests {
 
     const POLICY: &str = "\
 # a comment
-secret=ssh_authorized_key:/etc/ssh/authorized_keys.d/root:0644:none
-secret=registry_pull_token:/etc/containers/auth.json:0600:none
-secret=tailnet_auth_key::0600:tailscale-up
+secret=ssh_authorized_key:/etc/ssh/authorized_keys.d/root:0644:none:raw
+secret=registry_pull_token:/etc/containers/auth.json:0600:none:docker-auth@ghcr.io
+secret=tailnet_auth_key::0600:tailscale-up:raw
 ";
 
     #[test]
@@ -315,14 +453,130 @@ secret=tailnet_auth_key::0600:tailscale-up
     #[test]
     fn a_policy_declaring_nothing_is_refused() {
         assert!(Enrolment::parse("# nothing here\n").is_err());
-        assert!(Enrolment::parse("secret=a:b:c\n").is_err(), "four fields");
+        assert!(Enrolment::parse("secret=a:b:c\n").is_err(), "five fields");
         assert!(
-            Enrolment::parse("secret=a:/b:9999:none\n").is_err(),
+            Enrolment::parse("secret=a:/b:0600:none\n").is_err(),
+            "the format field is not optional"
+        );
+        assert!(
+            Enrolment::parse("secret=a:/b:9999:none:raw\n").is_err(),
             "octal"
         );
         assert!(
-            Enrolment::parse("secret=a:/b:0600:reboot\n").is_err(),
+            Enrolment::parse("secret=a:/b:0600:reboot:raw\n").is_err(),
             "action"
+        );
+        assert!(
+            Enrolment::parse("secret=a:/b:0600:none:pkcs12\n").is_err(),
+            "a format this control plane cannot materialise"
+        );
+        assert!(
+            Enrolment::parse("secret=a:/b:0600:none:docker-auth\n").is_err(),
+            "a docker-auth document with no registry is keyed by nothing"
+        );
+        assert!(
+            Enrolment::parse("secret=a:b:0600:none:raw\n").is_err(),
+            "a destination resolved against whatever directory the unit started in"
+        );
+        assert!(
+            Enrolment::parse("secret=a:/b:0600:none:raw\nsecret=a:/c:0600:none:raw\n").is_err(),
+            "one identifier declared twice is a form whose second entry silently \
+             does nothing"
+        );
+    }
+
+    /// A registry may carry a port, and the row is colon-separated. The format
+    /// field is split off last so the port survives.
+    #[test]
+    fn a_registry_may_carry_a_port() {
+        let e = Enrolment::parse("secret=t:/a:0600:none:docker-auth@registry.local:5000\n")
+            .expect("it parses");
+        assert_eq!(
+            e.slot("t").unwrap().format,
+            Format::DockerAuth {
+                registry: "registry.local:5000".to_string()
+            }
+        );
+    }
+
+    /// RFC 4648 §10's own vectors. The encoder is written here rather than
+    /// taken as a dependency, so it is checked against the authority rather
+    /// than against itself.
+    #[test]
+    fn base64_matches_rfc_4648() {
+        for (input, expected) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(input.as_bytes()), expected, "base64({input:?})");
+        }
+        // Every byte value, so the alphabet's high indices are exercised too.
+        let all: Vec<u8> = (0u8..=255).collect();
+        let encoded = base64(&all);
+        assert_eq!(encoded.len(), 344, "256 bytes is 344 base64 characters");
+        assert!(encoded.ends_with('='), "256 is not a multiple of three");
+    }
+
+    /// `CD-21`: what lands at the destination is the format applied to the
+    /// value, never the value verbatim.
+    ///
+    /// The registry token used to be written raw into a file podman parses as
+    /// JSON. Every pull failed, unattended, at the next update --- and the
+    /// operator had been told the value was accepted.
+    #[test]
+    fn a_registry_credential_is_a_document_podman_can_parse_cd_21() {
+        let e = Enrolment::parse(POLICY).expect("it parses");
+        let slot = e.slot("registry_pull_token").expect("declared");
+
+        let written = slot
+            .format
+            .materialise("ghp_tokenvalue", "afflom")
+            .expect("it materialises");
+
+        let parsed: serde_json::Value = serde_json::from_str(&written)
+            .expect("podman parses this file as JSON, so it has to be JSON");
+        let auth = parsed["auths"]["ghcr.io"]["auth"]
+            .as_str()
+            .expect("keyed by the registry the model declares");
+        // base64("afflom:ghp_tokenvalue"), which is the pair ghcr.io wants.
+        assert_eq!(auth, base64(b"afflom:ghp_tokenvalue"));
+        assert!(
+            !written.contains("ghp_tokenvalue"),
+            "the token appears only inside the encoded pair: {written}"
+        );
+
+        // A raw slot is unchanged by any of this: the value is the file.
+        let key = e.slot("ssh_authorized_key").expect("declared");
+        assert_eq!(
+            key.format
+                .materialise("ssh-ed25519 AAAA", "afflom")
+                .unwrap(),
+            "ssh-ed25519 AAAA\n"
+        );
+    }
+
+    /// The document is built by a serialiser, never by `format!`. A password
+    /// carrying a quote would otherwise produce a file podman cannot parse,
+    /// and the operator would be told the value was accepted.
+    #[test]
+    fn a_value_carrying_json_punctuation_still_produces_valid_json() {
+        let format = Format::DockerAuth {
+            registry: "ghcr.io".to_string(),
+        };
+        let awkward = r#"tok"en\with}punctuation"#;
+        let written = format
+            .materialise(awkward, r#"lo"gin"#)
+            .expect("materialises");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&written).expect("still JSON: {written}");
+        assert_eq!(
+            parsed["auths"]["ghcr.io"]["auth"].as_str().unwrap(),
+            base64(format!("lo\"gin:{awkward}").as_bytes())
         );
     }
 
@@ -395,8 +649,8 @@ mod api_contract {
     use super::*;
 
     const POLICY: &str = "\
-secret=ssh_authorized_key:/etc/ssh/authorized_keys.d/root:0644:none
-secret=tailnet_auth_key::0600:tailscale-up
+secret=ssh_authorized_key:/etc/ssh/authorized_keys.d/root:0644:none:raw
+secret=tailnet_auth_key::0600:tailscale-up:raw
 ";
 
     /// `CC-09`: the refusals a caller can provoke, and what each one says.

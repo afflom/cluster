@@ -952,6 +952,37 @@ fn nothing_the_rendered_tree_contributes_is_world_writable_ci_07() {
     );
 }
 
+/// Run the release path's own substitution and return what it wrote.
+///
+/// The task, not a copy of it. A gate that reimplements the thing it covers is
+/// green while the thing is broken, which is how the unfilled placeholder
+/// survived a check that named it.
+fn xtask_installer_config(root: &std::path::Path) -> String {
+    let output = std::env::temp_dir().join(format!("cl08-config-{}.toml", std::process::id()));
+    let run = std::process::Command::new(env!("CARGO"))
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "xtask",
+            "--",
+            "installer-config",
+            "--output",
+        ])
+        .arg(&output)
+        .current_dir(root)
+        .output()
+        .expect("cargo is what is running this test");
+    assert!(
+        run.status.success(),
+        "the release path's substitution failed, so `promote` would ship no ISO at all:\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let filled = std::fs::read_to_string(&output).expect("the task writes the file it reports");
+    std::fs::remove_file(&output).ok();
+    filled
+}
+
 /// `CL-08`: every placeholder in a shipping artifact has something that fills it.
 ///
 /// The check whose absence let two defects ship together.
@@ -981,43 +1012,28 @@ fn every_placeholder_in_a_shipping_artifact_is_filled_cl_08() {
         .expect("the bootc-image-builder configuration is committed");
     let placeholder = cluster_model::render::KICKSTART_PLACEHOLDER;
     if config.contains(placeholder) {
+        // The release path fills it by running a workspace task, and this runs
+        // *that task*, over the committed template and the rendered kickstart.
+        //
+        // It used to reimplement the substitution: the workflow escaped in
+        // Python, this test escaped again in Rust, and the assertion was that
+        // the test's own copy parsed. That could not have caught the shipping
+        // escaping being wrong, because it never ran it --- and the shipping
+        // escaping had already been wrong once, when a single-quoted TOML
+        // string was asked to hold a kickstart full of newlines.
         assert!(
-            promote.does(placeholder),
-            "bootstrap/config.toml carries `{placeholder}` and promote.yml never mentions \
-             it. The ISO would ship a kickstart whose body is that literal string, which \
-             fails at install and nowhere earlier (§12.1)"
-        );
-        assert!(
-            promote.does("generated/bootstrap/node.ks"),
-            "whatever fills `{placeholder}` must read the rendered kickstart, or it is \
-             substituting something else (§7.2)"
+            promote.does("installer-config"),
+            "bootstrap/config.toml carries `{placeholder}` and promote.yml never fills it. \
+             The ISO would ship a kickstart whose body is that literal string, which fails \
+             at install and nowhere earlier (§12.1)"
         );
 
-        // And the result has to parse. A kickstart has newlines and a
-        // single-quoted TOML string cannot hold one, so the first substitution
-        // produced a configuration the builder would have rejected --- at ISO
-        // build time, and nowhere earlier. The placeholder sits in a multi-line
-        // string for that reason, and this is the assertion that keeps it there.
-        let filled = config.replace(
-            placeholder,
-            &std::fs::read_to_string(root.join("generated/bootstrap/node.ks"))
-                .expect("the kickstart is rendered")
-                .replace('\\', "\\\\")
-                .replace("\"\"\"", "\\\"\\\"\\\""),
-        );
-        let parsed: toml::Value = filled.parse().unwrap_or_else(|e| {
-            panic!(
-                "substituting the kickstart into bootstrap/config.toml produces TOML that \
-                 does not parse: {e}. The builder would refuse it at ISO build time and \
-                 nothing earlier would say so"
-            )
-        });
-        let contents = parsed
-            .get("customizations")
-            .and_then(|c| c.get("installer"))
-            .and_then(|i| i.get("kickstart"))
-            .and_then(|k| k.get("contents"))
-            .and_then(|c| c.as_str())
+        let filled = xtask_installer_config(&root);
+        let parsed: toml::Value = filled
+            .parse()
+            .expect("installer-config parses what it writes, so this cannot fail");
+        let contents = parsed["customizations"]["installer"]["kickstart"]["contents"]
+            .as_str()
             .expect("the configuration carries the kickstart");
         assert!(
             contents.contains("clearpart --all"),
@@ -1026,6 +1042,16 @@ fn every_placeholder_in_a_shipping_artifact_is_filled_cl_08() {
         assert!(
             !contents.contains("@@"),
             "no placeholder may survive the substitution"
+        );
+        // Byte for byte what the model rendered. `installer-config` checks this
+        // itself and refuses to write otherwise; asserting it here as well is
+        // what makes the check falsifiable from outside the task.
+        assert_eq!(
+            contents.trim_end_matches('\n'),
+            std::fs::read_to_string(root.join("generated/bootstrap/node.ks"))
+                .expect("the kickstart is rendered")
+                .trim_end_matches('\n'),
+            "the builder would install something other than what `just render` produced"
         );
     }
 

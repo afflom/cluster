@@ -36,8 +36,15 @@ fn enrolment(c: &Cluster) -> Rendered {
          # `tailscale up --erroronfail`. And an ISO is a release artifact: a secret\n\
          # put in one is published to whoever downloads it (§9.1).\n\
          #\n\
-         # id:path:mode:apply --- an empty path means the value is spent by\n\
-         # applying it and deliberately not kept.\n\n",
+         # id:path:mode:apply:format --- an empty path means the value is spent\n\
+         # by applying it and deliberately not kept.\n\
+         #\n\
+         # `format` is how the entered value becomes the file, which is not the\n\
+         # same question as where the file goes. `raw` means the value is the\n\
+         # file. `docker-auth@<registry>` means the value is a password in a\n\
+         # containers-auth document keyed by that registry --- podman parses\n\
+         # that file as JSON, and a bare token written there fails every pull\n\
+         # (§13, CD-21).\n\n",
     );
     for secret in &c.policy.secret {
         body.push_str(&format!(
@@ -45,11 +52,15 @@ fn enrolment(c: &Cluster) -> Rendered {
             secret.id, secret.description, secret.enables
         ));
         body.push_str(&format!(
-            "secret={}:{}:{}:{}\n",
-            secret.id, secret.path, secret.mode, secret.apply
+            "secret={}:{}:{}:{}:{}\n",
+            secret.id,
+            secret.path,
+            secret.mode,
+            secret.apply,
+            secret.rendered_format()
         ));
     }
-    Rendered::new(node_path("enrolment.conf"), vec!["CD-20"], body)
+    Rendered::new(node_path("enrolment.conf"), vec!["CD-20", "CD-21"], body)
 }
 
 pub(crate) fn render(c: &Cluster) -> Vec<Rendered> {

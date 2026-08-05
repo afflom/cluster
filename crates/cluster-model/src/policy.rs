@@ -54,9 +54,22 @@ pub struct Secret {
     pub mode: String,
     /// What happens after it is written: `none`, or a named action.
     pub apply: String,
+    /// How the entered value becomes the file: `raw` or `docker-auth`.
+    ///
+    /// A separate question from [`Secret::path`], and the one that was missing.
+    /// An operator enters a credential; most destinations want that credential
+    /// and one wants a document built around it. `/etc/containers/auth.json` is
+    /// parsed by podman as JSON, so a bare token written there fails every pull
+    /// --- unattended, at the next update, a long way from where it was typed.
+    pub format: String,
+    /// Which registry a `docker-auth` document is keyed by. Empty otherwise.
+    pub registry: String,
     /// What stays down until it is given, in the operator's terms.
     pub enables: String,
 }
+
+/// How an entered value becomes the file at its destination (§12.2).
+pub const SECRET_FORMATS: &[&str] = &["raw", "docker-auth"];
 
 impl Secret {
     /// Whether the value is written to a file at all.
@@ -71,6 +84,19 @@ impl Secret {
     /// The mode as a number, or `None` when the model does not spell one.
     pub fn mode_bits(&self) -> Option<u32> {
         u32::from_str_radix(self.mode.trim_start_matches("0o"), 8).ok()
+    }
+
+    /// The format as the rendered policy spells it.
+    ///
+    /// `raw`, or `docker-auth@<registry>`. The registry rides in the same field
+    /// behind an `@` because a registry may carry a port, and a colon-separated
+    /// row cannot then hold it as a field of its own.
+    pub fn rendered_format(&self) -> String {
+        if self.registry.is_empty() {
+            self.format.clone()
+        } else {
+            format!("{}@{}", self.format, self.registry)
+        }
     }
 }
 

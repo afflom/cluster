@@ -26,6 +26,7 @@
 #![deny(missing_docs)]
 
 pub mod addressing;
+pub mod boot;
 pub mod config;
 pub mod discovery;
 pub mod links;

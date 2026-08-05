@@ -168,6 +168,10 @@ pub(crate) mod tests {
     use super::*;
 
     /// A resolver standing in for GitHub, so each rejection is deterministic.
+    ///
+    /// It counts what it was asked, because the cache's whole behaviour is
+    /// *whether the provider was consulted* --- and an assertion that the
+    /// answer was still `Ok` cannot tell a working cache from no cache at all.
     pub(crate) struct Fake {
         /// Tokens this provider recognises, and who they belong to.
         pub tokens: HashMap<String, String>,
@@ -175,10 +179,28 @@ pub(crate) mod tests {
         pub expired: Vec<String>,
         /// Tokens minted for a different App.
         pub foreign: Vec<String>,
+        /// How many times it has been asked.
+        pub asked: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Fake {
+        pub(crate) fn new(tokens: HashMap<String, String>) -> Self {
+            Self {
+                tokens,
+                expired: Vec::new(),
+                foreign: Vec::new(),
+                asked: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        pub(crate) fn asked(counter: &std::sync::Arc<Self>) -> usize {
+            counter.asked.load(std::sync::atomic::Ordering::SeqCst)
+        }
     }
 
     impl Resolver for Fake {
         fn resolve(&self, token: &str) -> Result<String, ApiError> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.expired.iter().any(|t| t == token) {
                 return Err(ApiError::Unauthenticated);
             }
@@ -192,6 +214,12 @@ pub(crate) mod tests {
         }
     }
 
+    impl Resolver for std::sync::Arc<Fake> {
+        fn resolve(&self, token: &str) -> Result<String, ApiError> {
+            Fake::resolve(self, token)
+        }
+    }
+
     fn authorizer() -> Authorizer {
         let mut tokens = HashMap::new();
         tokens.insert("good".to_string(), "afflom".to_string());
@@ -201,9 +229,26 @@ pub(crate) mod tests {
                 tokens,
                 expired: vec!["stale".to_string()],
                 foreign: vec!["other-app".to_string()],
+                asked: std::sync::atomic::AtomicUsize::new(0),
             }),
             vec!["afflom".to_string()],
             300,
+        )
+    }
+
+    /// One that counts, so the cache can be observed rather than assumed.
+    fn counting_authorizer(ttl_s: u64) -> (Authorizer, std::sync::Arc<Fake>) {
+        let resolver = std::sync::Arc::new(Fake::new(HashMap::from([
+            ("good".to_string(), "afflom".to_string()),
+            ("second".to_string(), "afflom".to_string()),
+        ])));
+        (
+            Authorizer::new(
+                Box::new(std::sync::Arc::clone(&resolver)),
+                vec!["afflom".to_string()],
+                ttl_s,
+            ),
+            resolver,
         )
     }
 
@@ -258,11 +303,10 @@ pub(crate) mod tests {
         // model naming no authorized login has not been filled in, and
         // open-by-default would make that omission invisible.
         let empty = Authorizer::new(
-            Box::new(Fake {
-                tokens: HashMap::from([("good".to_string(), "afflom".to_string())]),
-                expired: Vec::new(),
-                foreign: Vec::new(),
-            }),
+            Box::new(Fake::new(HashMap::from([(
+                "good".to_string(),
+                "afflom".to_string(),
+            )]))),
             Vec::new(),
             300,
         );
@@ -275,24 +319,55 @@ pub(crate) mod tests {
     }
 
     /// `CC-07`: the token cache bounds revocation lag and does not exceed it.
+    ///
+    /// Asserted by *counting what the identity provider was asked*. This used
+    /// to assert only that each call still returned `Ok`, which is true of a
+    /// working cache, a cache that never expires, and no cache at all --- so it
+    /// distinguished none of them and the claim rested on reading the code.
     #[test]
     fn the_token_cache_expires_at_the_declared_ttl_cc_07() {
-        let a = authorizer();
+        let (a, provider) = counting_authorizer(300);
+
         assert!(a.authorize(Some("Bearer good"), 0).is_ok());
+        assert_eq!(Fake::asked(&provider), 1, "the first use resolves");
 
-        // Inside the TTL the login is served from cache. That is the window
-        // §16.2 names: a token revoked at GitHub still works until it lapses.
+        // Inside the TTL the login is served from cache and GitHub is not asked
+        // again. That is the window §16.2 names: a token revoked at GitHub
+        // still works until it lapses.
+        assert!(a.authorize(Some("Bearer good"), 1).is_ok());
         assert!(a.authorize(Some("Bearer good"), 299).is_ok());
+        assert_eq!(
+            Fake::asked(&provider),
+            1,
+            "two more uses inside the interval asked the provider nothing"
+        );
 
-        // At the TTL it is resolved again. The fake still knows it, so this
-        // succeeds --- what is being asserted is that the cache stopped
-        // answering, not that the answer changed.
+        // At the interval it is resolved again --- which is the *bound* on the
+        // lag, and the thing that makes revocation eventually take effect.
         assert!(a.authorize(Some("Bearer good"), 300).is_ok());
+        assert_eq!(
+            Fake::asked(&provider),
+            2,
+            "at the declared interval the provider is asked again"
+        );
 
-        // A cache keyed on the token, not on the login: two tokens for the same
-        // person expire independently, and one being revoked does not extend
-        // the other's life.
-        assert!(a.authorize(Some("Bearer stranger"), 0).is_err());
+        // A cache keyed on the token, not on the login: two tokens for one
+        // person expire independently, so one being revoked does not extend the
+        // other's life.
+        assert!(a.authorize(Some("Bearer second"), 300).is_ok());
+        assert_eq!(
+            Fake::asked(&provider),
+            3,
+            "a second token for the same login is not served from the first's entry"
+        );
+
+        // And a zero TTL is a round trip every time rather than a cache with no
+        // lag --- which is why the model refuses to declare one.
+        let (never, provider) = counting_authorizer(0);
+        for at in 0..3 {
+            assert!(never.authorize(Some("Bearer good"), at).is_ok());
+        }
+        assert_eq!(Fake::asked(&provider), 3);
     }
 
     #[test]

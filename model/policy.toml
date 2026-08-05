@@ -299,6 +299,18 @@ chrony_max_offset_ms = 100
 # What is declared here is where each secret *goes*, never what it is. The
 # rendered enrolment policy carries these rows; the values reach the node once,
 # over the browser, and stay on it.
+#
+# `format` says how the value becomes the file, which is not the same question
+# as where the file is. An operator enters a *credential*; some destinations
+# want that credential and one wants a document built around it. Writing the
+# entered string verbatim into every destination is what made the registry
+# token useless: podman parses /etc/containers/auth.json as JSON, so a bare
+# token there is a parse error on every pull, and the failure appears at the
+# next unattended update rather than at the moment it was entered (§13, CD-21).
+#
+#   raw          the value is the file
+#   docker-auth  the value is a password in a containers-auth.json document,
+#                with the enrolling operator's GitHub login as the username
 # ---------------------------------------------------------------------------
 
 [[secret]]
@@ -311,6 +323,8 @@ description = "The operator's SSH public key"
 path = "/etc/ssh/authorized_keys.d/root"
 mode = "0644"
 apply = "none"
+format = "raw"
+registry = ""
 enables = "SSH, which §16.5 keeps as the way back in when the control plane is the thing that is wrong"
 
 [[secret]]
@@ -319,6 +333,16 @@ description = "A GHCR token with read:packages and nothing else"
 path = "/etc/containers/auth.json"
 mode = "0600"
 apply = "none"
+# Not `raw`. What an operator has is a token; what podman reads is a JSON
+# document keyed by registry, and the two are not the same string. Writing the
+# token verbatim produced a file podman could not parse --- so every pull
+# failed, unattended, with the cause three layers from the symptom.
+#
+# The username is the login the device flow authenticated, not a constant: the
+# operator entering a GHCR token is authenticated as the GitHub account it
+# belongs to, and that is exactly what ghcr.io wants in the pair (§16.2).
+format = "docker-auth"
+registry = "ghcr.io"
 enables = "pulling the images §13 applies unattended"
 
 [[secret]]
@@ -330,4 +354,6 @@ description = "A Tailscale auth key, ephemeral and single-use"
 path = ""
 mode = "0600"
 apply = "tailscale-up"
+format = "raw"
+registry = ""
 enables = "off-LAN access, and the tailnet the control plane is published on (§4.5, §16.2)"
