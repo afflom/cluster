@@ -482,7 +482,31 @@ fn unattended_behaviour_is_rendered_from_policy_cd_08() {
             p.rollout.poll_jitter_max_s
         )));
 
-        let env = unit("cluster-updater.env");
+        // Not under `systemd/`: it is rendered policy, and it lands where
+        // `init.conf` does. It used to sit in the unit directory, which the
+        // build copies wholesale into `/usr/lib/systemd/system/` --- while the
+        // unit read `/etc/cluster/`, which nothing wrote.
+        let env = files
+            .iter()
+            .find(|f| f.path == "node/cluster-updater.env")
+            .unwrap_or_else(|| panic!("{}: cluster-updater.env was not rendered", node.name))
+            .body
+            .clone();
+
+        // And the unit reads it where it actually is. `EnvironmentFile=`
+        // without a leading `-` makes a missing file a unit *start failure*, so
+        // these two disagreeing meant the updater never ran on any node.
+        let service = unit("cluster-updater.service");
+        let read = service
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("EnvironmentFile="))
+            .expect("the updater unit reads a rendered environment");
+        assert!(
+            read.ends_with("/cluster-updater.env") && read.starts_with("/usr/lib/cluster/"),
+            "{}: the unit reads {read}, which is not where the rendered environment is \
+             shipped (§7.2, §13.1)",
+            node.name
+        );
         // Which node this is, is deliberately absent. One image boots all three
         // ordinals (§8.4), so CLUSTER_UPDATE_POSITION is written at boot by
         // cluster-init into /run/cluster/node.env, and the unit reads both files.

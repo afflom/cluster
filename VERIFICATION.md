@@ -280,6 +280,45 @@ names come from the model now.
 
 `CL-05`'s configuration assertion is the third, above.
 
+## Why nothing had ever been promoted
+
+The images were not stale --- `ghcr.io/afflom/cluster/node` carries a `ci-<sha>`
+tag for every commit on `main`, current to the day. What did not exist was
+`:stable`, which is the tag §13.1 makes a node follow, and there had never been
+a release or a `promote/*` tag either.
+
+That is not neglect. Promotion refuses a commit whose T2 was skipped; T2 runs on
+a self-hosted runner; the runner runs on the cluster being installed; and the
+cluster is installed from an ISO that promotion builds. `just installer` breaks
+the install half of that circle. The release half is broken by doing step 8 of
+`INSTALL.md` before step 9, and the guide now says so rather than presenting the
+tag push as available from the start.
+
+Reading the consequence through found two more defects.
+
+**`cluster-updater.service` could not start on any node.** It read
+`EnvironmentFile=/etc/cluster/cluster-updater.env`. The renderer emitted the file
+under `generated/node/systemd/`, which the build copies wholesale into
+`/usr/lib/systemd/system/`, and nothing wrote `/etc/cluster/` at all.
+`EnvironmentFile=` without a leading `-` makes a missing file a unit *start
+failure*, so §13's unattended update was inert across the fleet --- and
+`check-wiring` could not see it, because the check that resolves referenced paths
+looked only under `/usr/`: it had been written to find executables, and a path a
+unit *reads* is a reference like any other. The file is rendered policy now and
+lands where `init.conf` does; every `EnvironmentFile=` is resolved; the planted
+defect names the unit, the path, and what it costs.
+
+**And an unpromoted cluster reported itself unhealthy.** `resolve_target`
+conflated "no registry answered" with "every registry answered and none carries
+this tag". The first is an outage and must be reported --- pinning a node to its
+current image because the network was down would make an outage look like a
+policy decision. The second is a cluster nobody has promoted yet. Reporting it
+as a failure put the updater into `systemctl --failed`, which §10.1's
+`NoFailedUnits` check reads, so every node of a new fleet reported itself
+unhealthy to its peers, to §18 and to greenboot --- before it had done anything
+wrong. The two are told apart on the OCI distribution spec's own error codes,
+`MANIFEST_UNKNOWN` and `NAME_UNKNOWN`, rather than on prose.
+
 ## Every gate is falsifiable
 
 A gate nobody has seen fail is indistinguishable from a gate that cannot. Before
@@ -329,6 +368,8 @@ here.
 | `CL-05` | the `--config` flag bootc-image-builder does not have | yes |
 | `CD-14` | an image build declaring a setting the model already declares | yes, now that it reads the real directory |
 | `CC-08` | a fallback API base naming a host the model does not render | yes |
+| `check-wiring` (R1) | a unit reading an `EnvironmentFile=` nothing writes | yes, naming the unit, the path and the cost |
+| `CD-08` | the rendered updater environment and the unit disagreeing about its path | yes |
 
 **A second plant did not fire, and the reason is worth stating.** Breaking the
 installer escaper so that it stops escaping quotes leaves `CL-08` green. That is

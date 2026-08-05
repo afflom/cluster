@@ -220,6 +220,17 @@ browser client onto the storage node, and `promote.yml` will accept a tag.
 git tag promote/v1 && git push origin promote/v1
 ```
 
+**This is the first point at which promotion can succeed, and step 8 is why.**
+The workflow refuses a commit whose T2 was skipped, T2 runs on a self-hosted
+runner, and the runner only exists once the fleet is up and
+`CLUSTER_FLEET_ONLINE` is `true`. Pushing the tag earlier fails at that check,
+which is the correct outcome and not a bug to work around.
+
+Until the first promotion, `:stable` does not exist. Nodes say so plainly ---
+"nothing to follow --- no image is tagged `stable` yet" --- and stay healthy;
+an unpromoted cluster is not a broken one. What they cannot do is update
+themselves, so the first release is what turns §13 on.
+
 Promotion is deliberate and human-initiated; everything after it is not. The
 workflow refuses a commit whose `build`, `t1` and `t2` jobs are not green —
 including one where a tier was *skipped*, because absence is not consent. It

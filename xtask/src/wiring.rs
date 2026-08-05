@@ -62,6 +62,7 @@ pub fn check_wiring(root: &Path) -> Result<(), Fail> {
     let mut problems = Vec::new();
     problems.extend(every_rendered_file_is_consumed(root, &cluster)?);
     problems.extend(every_invoked_path_is_produced(root)?);
+    problems.extend(every_environment_file_is_written(root)?);
     problems.extend(every_owned_image_is_built(root, &cluster)?);
     problems.extend(every_called_endpoint_is_routed(root)?);
     problems.extend(every_mounted_config_is_rendered(root, &cluster)?);
@@ -133,6 +134,105 @@ fn every_rendered_file_is_consumed(root: &Path, cluster: &Cluster) -> Result<Vec
         }
     }
     Ok(problems)
+}
+
+/// Every `EnvironmentFile=` a rendered unit reads is a file something writes.
+///
+/// `EnvironmentFile=` without a leading `-` makes a missing file a unit **start
+/// failure**, not a warning --- so a unit pointing at a path nothing writes does
+/// not run at all, on every machine, for ever.
+///
+/// That is what happened. `cluster-updater.service` read
+/// `/etc/cluster/cluster-updater.env`; the renderer emitted the file under
+/// `generated/node/systemd/`, which the build copies wholesale into
+/// `/usr/lib/systemd/system/`; nothing wrote `/etc/cluster/` at all. The updater
+/// failed on every node and §13's unattended update was inert across the fleet.
+///
+/// The check that should have caught it looked only at paths under `/usr/`,
+/// because it was written to find *executables*. A path a unit reads is a
+/// reference like any other.
+fn every_environment_file_is_written(root: &Path) -> Result<Vec<String>, Fail> {
+    let files = containerfiles(root)?;
+    let build_text: String = files.iter().map(|(_, t)| t.as_str()).collect();
+    let init = std::fs::read_to_string(root.join("crates/cluster-init/src/main.rs"))
+        .unwrap_or_default()
+        + &std::fs::read_to_string(root.join("crates/cluster-init/src/units.rs"))
+            .unwrap_or_default();
+
+    let mut problems = Vec::new();
+    for (unit, path) in environment_files(root)? {
+        // A leading `-` makes the file optional, and systemd starts the unit
+        // without it. That is a deliberate choice, so it is allowed.
+        if let Some(optional) = path.strip_prefix('-') {
+            let _ = optional;
+            continue;
+        }
+        // Written at boot rather than shipped: `cluster-init` computes what is
+        // in it from an ordinal the image does not have (§3.3, §4.1). Required
+        // to be written by that binary rather than merely to look runtime-ish.
+        if let Some(rest) = path.strip_prefix("/run/") {
+            let name = rest.rsplit('/').next().unwrap_or(rest);
+            if init.contains(name) {
+                continue;
+            }
+            problems.push(format!(
+                "{unit}: reads {path}, and nothing in cluster-init writes it. A unit \
+                 whose EnvironmentFile is missing does not start (§7.2)"
+            ));
+            continue;
+        }
+        if build_text.contains(&path) {
+            continue;
+        }
+        if let Some(source) = shipped_source(root, &files, &path) {
+            if source.exists() {
+                continue;
+            }
+        }
+        problems.push(format!(
+            "{unit}: reads {path}, and no image build ships it. `EnvironmentFile=` \
+             without a leading `-` makes a missing file a unit *start failure*, so \
+             this unit never runs on any node (§7.2)"
+        ));
+    }
+    Ok(problems)
+}
+
+/// Every `EnvironmentFile=` a rendered unit declares, with the unit it is in.
+fn environment_files(root: &Path) -> Result<Vec<(String, String)>, Fail> {
+    let mut out = Vec::new();
+    let dir = root.join(GENERATED_DIR);
+    if !dir.exists() {
+        return Ok(out);
+    }
+    let mut stack = vec![dir.clone()];
+    while let Some(next) = stack.pop() {
+        for entry in std::fs::read_dir(&next)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let relative = path
+                .strip_prefix(&dir)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            for line in text.lines().map(str::trim) {
+                if line.starts_with('#') {
+                    continue;
+                }
+                if let Some(value) = line.strip_prefix("EnvironmentFile=") {
+                    out.push((relative.clone(), value.trim().to_string()));
+                }
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// The file in the repository that a shipped path would have come from.

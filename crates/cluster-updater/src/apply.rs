@@ -30,7 +30,11 @@ use crate::{RolloutError, Stage};
 /// without either.
 pub trait Applier {
     /// What `:stable` resolves to, from the first registry that answers.
-    fn resolve_target(&self) -> Result<String, RolloutError>;
+    ///
+    /// `Ok(None)` means every registry answered and none of them carries the
+    /// tag: a cluster that has not been promoted yet. That is not a fault and
+    /// must not be reported as one --- see [`SystemApplier::resolve_target`].
+    fn resolve_target(&self) -> Result<Option<String>, RolloutError>;
     /// Verify a digest's signature against the shipped policy (§12.3).
     fn verify(&self, digest: &str) -> Result<(), RolloutError>;
     /// Publish this node's rollout state, so peers can read it (§13.2).
@@ -39,6 +43,26 @@ pub trait Applier {
     fn upgrade_and_reboot(&self) -> Result<(), RolloutError>;
     /// Record a digest as quarantined (§13.4).
     fn quarantine(&self, digest: &str) -> Result<(), RolloutError>;
+}
+
+/// Whether a registry's refusal means "this tag does not exist here".
+///
+/// Matched on the OCI distribution spec's own error codes rather than on
+/// prose: `MANIFEST_UNKNOWN` and `NAME_UNKNOWN` are part of the registry API,
+/// and a registry that answers with one has answered. Anything else --- a
+/// timeout, a TLS failure, a 500 --- is a registry that did not answer, and the
+/// difference is the difference between a cluster nobody has promoted yet and
+/// an outage.
+fn names_an_absent_tag(stderr: &str) -> bool {
+    let lowered = stderr.to_ascii_lowercase();
+    [
+        "manifest unknown",
+        "manifest_unknown",
+        "name unknown",
+        "name_unknown",
+    ]
+    .iter()
+    .any(|code| lowered.contains(code))
 }
 
 /// The real applier: the node, acting on itself.
@@ -59,8 +83,12 @@ pub struct SystemApplier {
 }
 
 impl Applier for SystemApplier {
-    fn resolve_target(&self) -> Result<String, RolloutError> {
+    fn resolve_target(&self) -> Result<Option<String>, RolloutError> {
         let mut attempts = Vec::new();
+        // Whether *every* registry answered, and every answer was that this tag
+        // does not exist. That is a different condition from not being able to
+        // reach them, and the two used to be one.
+        let mut all_absent = true;
         for registry in &self.registries {
             let reference = format!("{registry}/{}:{}", self.image, self.tag);
             let output = Command::new("skopeo")
@@ -75,17 +103,38 @@ impl Applier for SystemApplier {
                 Ok(o) if o.status.success() => {
                     let digest = String::from_utf8_lossy(&o.stdout).trim().to_string();
                     if !digest.is_empty() {
-                        return Ok(digest);
+                        return Ok(Some(digest));
                     }
+                    all_absent = false;
                     attempts.push(format!("{reference}: answered with an empty digest"));
                 }
-                Ok(o) => attempts.push(format!(
-                    "{reference}: {}",
-                    String::from_utf8_lossy(&o.stderr).trim()
-                )),
-                Err(e) => attempts.push(format!("{reference}: {e}")),
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                    if !names_an_absent_tag(&stderr) {
+                        all_absent = false;
+                    }
+                    attempts.push(format!("{reference}: {stderr}"));
+                }
+                Err(e) => {
+                    all_absent = false;
+                    attempts.push(format!("{reference}: {e}"));
+                }
             }
         }
+
+        if all_absent && !self.registries.is_empty() {
+            // Every registry answered, and none has the tag. A cluster that has
+            // never been promoted has nothing to follow, and saying so is not
+            // the same as failing to find out.
+            //
+            // These were one condition, and the cost was specific: before a
+            // first promotion `:stable` does not exist, so the updater reported
+            // a failure on every run, `systemctl --failed` was non-empty, and
+            // §10.1's `NoFailedUnits` made every node in a new fleet report
+            // itself unhealthy --- to its peers, to §18, and to greenboot.
+            return Ok(None);
+        }
+
         // No registry answered. This is not "no update available": pinning a
         // node to its current image because the network was down would make an
         // outage look like a policy decision.
@@ -223,6 +272,37 @@ mod tests {
             state_path,
             control_plane: "http://127.0.0.1:8080".to_string(),
             node: "node2".to_string(),
+        }
+    }
+
+    /// A registry that says "this tag does not exist" has answered; one that
+    /// times out has not. Distinguishing them is what keeps a cluster nobody
+    /// has promoted yet from looking like an outage.
+    #[test]
+    fn an_absent_tag_is_told_apart_from_a_registry_that_did_not_answer() {
+        // The OCI distribution spec's own error codes, as registries emit them.
+        for absent in [
+            "manifest unknown",
+            "Error: MANIFEST_UNKNOWN: manifest unknown",
+            "requested access to the resource is denied: name unknown",
+            "NAME_UNKNOWN",
+        ] {
+            assert!(names_an_absent_tag(absent), "{absent} is an answer");
+        }
+        // Everything else is a registry that did not answer.
+        for unreachable in [
+            "dial tcp 10.10.255.1:5000: connect: connection refused",
+            "context deadline exceeded",
+            "x509: certificate has expired",
+            "unauthorized: authentication required",
+            "500 Internal Server Error",
+            "",
+        ] {
+            assert!(
+                !names_an_absent_tag(unreachable),
+                "`{unreachable}` is not an answer about the tag, and treating it as one \
+                 would pin a node to its current image during an outage"
+            );
         }
     }
 

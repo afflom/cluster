@@ -492,12 +492,26 @@ fn updater_env(c: &Cluster) -> Rendered {
         c.policy.drain.container_stop_grace_s
     ));
 
-    Rendered::new(
-        node_path("systemd/cluster-updater.env"),
-        vec!["CD-08"],
-        body,
-    )
+    // Not under `systemd/`. That directory is copied wholesale into
+    // `/usr/lib/systemd/system/`, so this landed there --- while the unit read
+    // `/etc/cluster/cluster-updater.env`, which nothing wrote. `EnvironmentFile=`
+    // without a leading `-` makes a missing file a unit *start failure*, so
+    // `cluster-updater.service` failed on every node and §13's unattended update
+    // was inert on the whole fleet.
+    //
+    // It is rendered policy, like `init.conf` and `enrolment.conf`, so it goes
+    // where those go and is shipped read-only (§7.2).
+    Rendered::new(node_path(UPDATER_ENV_FILE), vec!["CD-08"], body)
 }
+
+/// Where the updater's rendered environment sits in the tree.
+pub(crate) const UPDATER_ENV_FILE: &str = "cluster-updater.env";
+
+/// Where it lands on a node, and what the unit reads.
+///
+/// Named once so the renderer of the file and the renderer of the unit cannot
+/// disagree --- which is exactly what they did.
+pub(crate) const UPDATER_ENV_PATH: &str = "/usr/lib/cluster/cluster-updater.env";
 
 fn updater_service(_c: &Cluster) -> Rendered {
     let mut body = String::new();
@@ -520,7 +534,7 @@ fn updater_service(_c: &Cluster) -> Rendered {
         "Service",
         &[
             "Type=oneshot".to_string(),
-            "EnvironmentFile=/etc/cluster/cluster-updater.env".to_string(),
+            format!("EnvironmentFile={UPDATER_ENV_PATH}"),
             "ExecStart=/usr/bin/cluster-updater run".to_string(),
         ],
     ));

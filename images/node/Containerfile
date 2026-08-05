@@ -137,6 +137,13 @@ RUN chmod 0755 /usr/lib/greenboot/check/required.d/*.sh
 # table, and the per-role firewall and kernel-argument sets it selects from
 # (§3.1, §4.1, §4.4, §8.5).
 COPY generated/node/init.conf /usr/lib/cluster/init.conf
+# The rollout predicate's inputs (§13.1). It used to land in
+# /usr/lib/systemd/system/ --- swept up by the wholesale copy of the unit
+# directory --- while cluster-updater.service read /etc/cluster/, which nothing
+# wrote. `EnvironmentFile=` without a leading `-` makes a missing file a unit
+# start failure, so the updater failed on every node and unattended update never
+# ran at all.
+COPY generated/node/cluster-updater.env /usr/lib/cluster/cluster-updater.env
 # Where each enrolled secret goes (§12.2). Destinations only --- no value is in
 # this image, in this repository, or in the ISO.
 COPY generated/node/enrolment.conf /usr/lib/cluster/enrolment.conf

@@ -57,7 +57,19 @@ fn main() -> ExitCode {
 
 fn run() -> Result<Decision, RolloutError> {
     let applier = applier_from_environment()?;
-    let target = applier.resolve_target()?;
+
+    // A cluster that has not been promoted has nothing to follow. Every
+    // registry answered and none carries the tag, which is a fact about the
+    // fleet rather than a failure of this node --- and reporting it as a failure
+    // put every node of a new fleet into `systemctl --failed`, which §10.1's
+    // health predicate reads (§13.1).
+    let Some(target) = applier.resolve_target()? else {
+        println!(
+            "cluster-updater: nothing to follow --- no image is tagged `stable` yet. \
+             A fleet is promoted into existence by pushing a `promote/*` tag (§9.3)."
+        );
+        return Ok(Decision::Wait("no image has been promoted yet".to_string()));
+    };
 
     let observation = observe(&target, &applier)?;
     let decision = admits(&observation);
