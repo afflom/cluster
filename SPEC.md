@@ -927,8 +927,15 @@ Once per node:
    root of trust:** §12.3's signature policy ships inside the image, so the first
    install cannot verify itself and is anchored by the checksum instead.
 3. Mount via IPMI virtual media; the rendered kickstart partitions per §5.1 and
-   injects the authorized key, the registry PAT, and the Tailscale auth key.
-4. Reboot; `cluster-health` must pass before the node is considered provisioned.
+   injects **nothing**. It carries no credentials: the ISO is a release artifact
+   and this repository is public (§9.1, §12.2).
+4. Reboot. The node comes up unenrolled — no SSH key, no registry token, no
+   tailnet.
+5. Open the storage node's control plane in a browser over the LAN, authenticate
+   with the GitHub App device flow, and enter the secrets §12.2 declares. This
+   is done once for the cluster, not once per machine: the values are stored on
+   the storage node and the others receive what they need over the mesh.
+6. `cluster-health` must pass before the node is considered provisioned.
 
 **The same ISO is used for every machine, and the order matters.** There is one
 image (§8.4), so there is one installer and nothing to select at install time.
@@ -947,20 +954,56 @@ From that point IPMI is used only for power control and post-mortems.
 
 ### 12.2 Secrets
 
+**Secrets reach a cluster through the browser, after it boots.** Not through
+the ISO, and not through an Actions secret substituted into one.
+
+That was the previous design and it could not have worked. The Actions secrets
+it named did not exist — `secrets.GITHUB_TOKEN` is the only secret any workflow
+has ever referenced — so a node would have installed the literal string
+`@@AUTHORIZED_KEY@@` as root's authorized key, on a headless machine with no
+console, and then died at `tailscale up --erroronfail`, taking the install with
+it. And the shape was wrong even with the secrets present: an ISO is a release
+artifact, this repository is public (§9.1), and a secret substituted into a
+release is a secret published to whoever downloads it.
+
+So a node installs **unenrolled**. It has the control plane and nothing else.
+The operator reaches it over the LAN, authenticates with the GitHub App device
+flow — the one credential that can be checked without any of the others
+existing — and enters the rest. §16.2's authorization is what makes this a
+bootstrap path rather than an open door.
+
+`model/policy.toml` declares each secret by **destination**, never by value:
+where it lands, at what mode, and what applying it does. `CD-20` asserts the
+rendering, `CL-08` asserts no artifact carries a placeholder nothing fills, and
+`CC-09` asserts the control plane hands none of them back.
+
 | Secret | Lives in | Reaches a node | Rotation |
 | --- | --- | --- | --- |
-| SSH authorized key | operator's device | kickstart | on device change |
-| GHCR read PAT | Actions secret | kickstart → `/etc/containers/auth.json` | quarterly |
+| SSH authorized key | operator's device | browser, at enrolment | on device change |
+| GHCR read PAT | operator's GitHub account | browser, at enrolment | quarterly |
 | GitHub App private key | Actions secret | never reaches a node | annually |
-| Tailscale auth key | Actions secret | kickstart, ephemeral single-use | per install |
+| Tailscale auth key | operator's tailnet | browser, ephemeral single-use, spent on entry | per install |
 | Runner registration token | Actions secret | Quadlet env file, per registration | per registration |
 | Garage access keys | generated on the storage node at first boot | never leave it except to CI as an Actions secret | annually |
 | Cluster join secret | generated on the storage node at first boot | over the mesh, at registration (§2.3.2) | on `cluster-ctl secret rotate` |
 | `cluster-ctl` session DB | `lv_data` | — | — |
 | cosign | none — keyless (§12.3) | — | — |
 
-Rotation is documented and manual. Automating rotation for a handful of secrets
-across three nodes would add more machinery than it retires.
+Rotation is documented and manual, and rarely needed: a secret entered through
+the browser stays on the cluster, so rotation is a decision about the credential
+rather than a consequence of how it got there.
+
+**Nothing is read back.** The control plane reports which secrets are set and
+which are missing; there is no route that returns one. An operator who has lost
+a token issues a new one. A control plane that would hand a credential back is
+one bearer token away from handing it to somebody else.
+
+**Enrolment is reachable on the LAN, and has to be.** A machine that has just
+installed has no tailnet — the auth key is one of the things not yet given —
+and no client is on the mesh. §4.4 opens the control-plane port to the LAN
+prefix for the storage role, the same prefix that already reaches SSH on every
+node. Binding is not the boundary and never was: the packet filter is, it
+defaults to drop, and it is a model fact.
 
 **The join secret is generated, never declared.** It authenticates a node's
 registration request and the tunnel sessions that follow (§11.1). It is created

@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
 use crate::auth::{Authorizer, AUTHORIZATION_HEADER};
+use crate::enrolment::{self, Enrolment, EnrolmentState, Submission};
 use crate::reclaim::{decide, RolloutStatus, Thresholds};
 use crate::rollout::RolloutState;
 use crate::session::{DirtyObservation, Session, SessionState};
@@ -67,6 +68,13 @@ pub struct Api {
     pub web_root: String,
     /// What a browser needs to begin a device authorization (§16.2).
     pub auth_config: AuthConfig,
+    /// Where each enrolled secret goes, rendered from the model (§12.2).
+    pub enrolment: Enrolment,
+    /// Where markers for spent secrets live, so one can still be reported as
+    /// given after the value is gone.
+    pub enrolment_root: String,
+    /// The prefix the storage node advertises to the tailnet, or none.
+    pub advertise_routes: Option<String>,
 }
 
 /// The device flow's public parameters (§16.2).
@@ -140,6 +148,11 @@ pub fn router(api: Api) -> Router {
         .route("/api/sessions/{id}/{action}", post(lifecycle))
         .route("/api/rollout", get(rollout))
         .route("/api/rollout/quarantine", post(quarantine))
+        // Enrolment (§12.2). A node installs with no credentials and is given
+        // them here, over the LAN, once --- which is why this repository being
+        // public costs it nothing: none of these values is in it.
+        .route("/api/enrolment", get(enrolment_state))
+        .route("/api/enrolment/{id}", post(enrol))
         // §16.3's mirror. The same bundle Pages publishes, served at the origin
         // the API is on: same-origin has no preflight and no browser policy
         // standing between a page and the API it was built for. Pages stays
@@ -688,6 +701,116 @@ fn now_seconds() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// `GET /api/enrolment` --- which secrets this cluster has been given (§12.2).
+///
+/// Presence and nothing else. It will not return a value, and there is no route
+/// that will: an operator who has lost a token issues a new one, and a control
+/// plane that handed a credential back would be one bearer token away from
+/// handing it to somebody else.
+async fn enrolment_state(
+    State(api): State<Api>,
+    headers: HeaderMap,
+) -> Result<Json<EnrolmentState>, ApiError> {
+    caller(&headers, &api)?;
+    Ok(Json(EnrolmentState::of(
+        api.enrolment
+            .state(std::path::Path::new(&api.enrolment_root)),
+    )))
+}
+
+/// `POST /api/enrolment/{id}` --- give this cluster one secret (§12.2).
+///
+/// Authorized like everything else: the GitHub App device flow, which is the one
+/// credential that can be checked without any of the others existing. That is
+/// what makes this the bootstrap path rather than a chicken-and-egg.
+async fn enrol(
+    State(api): State<Api>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<Submission>,
+) -> Result<Json<EnrolmentState>, ApiError> {
+    caller(&headers, &api)?;
+    let slot = api.enrolment.slot(&id)?;
+    enrolment::check_value(&id, &body.value)?;
+
+    let root = std::path::Path::new(&api.enrolment_root);
+    if slot.is_stored() {
+        write_secret(slot, &body.value)?;
+    }
+    match slot.apply {
+        enrolment::Apply::None => {}
+        enrolment::Apply::TailscaleUp => {
+            let args = enrolment::tailscale_arguments(&body.value, api.advertise_routes.as_deref());
+            let output = std::process::Command::new("tailscale")
+                .args(&args)
+                .output()
+                .map_err(|e| ApiError::RejectedSecret {
+                    id: id.clone(),
+                    // The command, never the arguments: `--auth-key` is in them.
+                    because: format!("`tailscale up` could not be run: {e}"),
+                })?;
+            if !output.status.success() {
+                return Err(ApiError::RejectedSecret {
+                    id: id.clone(),
+                    because: format!(
+                        "`tailscale up` refused it: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    ),
+                });
+            }
+        }
+    }
+    // The marker records that a secret was given, which is the only way a spent
+    // one can be reported at all --- the value is gone by design.
+    std::fs::create_dir_all(root).map_err(|e| ApiError::EnrolmentUnavailable {
+        because: format!("{}: {e}", root.display()),
+    })?;
+    std::fs::write(enrolment::marker_path(root, &id), "").map_err(|e| {
+        ApiError::EnrolmentUnavailable {
+            because: format!("recording that `{id}` was given: {e}"),
+        }
+    })?;
+
+    Ok(Json(EnrolmentState::of(api.enrolment.state(root))))
+}
+
+/// Write one secret to its declared destination, at its declared mode.
+///
+/// The mode is set **on creation**, not narrowed afterwards: a credential
+/// created world-readable and chmodded a moment later is world-readable for the
+/// width of that window. The same mistake shipped a world-writable signature
+/// policy once already (`CI-07`).
+fn write_secret(slot: &enrolment::Slot, value: &str) -> Result<(), ApiError> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let path = std::path::Path::new(&slot.path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| ApiError::EnrolmentUnavailable {
+            because: format!("{}: {e}", parent.display()),
+        })?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(slot.mode)
+        .open(path)
+        .map_err(|e| ApiError::EnrolmentUnavailable {
+            because: format!("{}: {e}", slot.path),
+        })?;
+    // `mode` applies at creation only, so an existing file keeps what it had.
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(slot.mode)).map_err(|e| {
+        ApiError::EnrolmentUnavailable {
+            because: format!("{}: {e}", slot.path),
+        }
+    })?;
+    writeln!(file, "{value}").map_err(|e| ApiError::EnrolmentUnavailable {
+        because: format!("{}: {e}", slot.path),
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]

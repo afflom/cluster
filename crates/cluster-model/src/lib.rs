@@ -33,7 +33,8 @@ pub use network::{
     Addressing, Class, Discovery, Firewall, FirewallRule, Hosts, Link, NetworkFile, Routing,
 };
 pub use policy::{
-    Alert, Auth, Drain, DrainBudget, Gc, Greenboot, Health, PolicyFile, Reclaim, Rollout, Tunnel,
+    Alert, Auth, Drain, DrainBudget, Gc, Greenboot, Health, PolicyFile, Reclaim, Rollout, Secret,
+    Tunnel,
 };
 pub use render::{render_all, Rendered};
 
@@ -871,6 +872,82 @@ impl Cluster {
             )));
         }
 
+        // Enrolment (§12.2). Every rule here is one that would otherwise be
+        // found by an operator whose cluster did not come up.
+        if self.policy.secret.is_empty() {
+            return Err(bad(
+                "no secrets are declared for enrolment. A cluster that needs none is a \
+                 cluster that pulls from nothing, joins no tailnet and admits no SSH \
+                 (§12.2)",
+            ));
+        }
+        let mut ids = BTreeSet::new();
+        let mut paths = BTreeSet::new();
+        for secret in &self.policy.secret {
+            if !ids.insert(secret.id.as_str()) {
+                return Err(bad(format!("secret `{}`: declared twice", secret.id)));
+            }
+            // The value must never be in the model. A row carries a destination
+            // and a description; anything that looks like a credential in one is
+            // a credential in a public repository (§9.1, §12.2).
+            for (field, value) in [
+                ("description", &secret.description),
+                ("enables", &secret.enables),
+            ] {
+                if looks_secret(value) {
+                    return Err(bad(format!(
+                        "secret `{}`: its {field} looks like a value rather than a \
+                         description. This file is public, and a row says where a secret \
+                         goes rather than what it is (§12.2)",
+                        secret.id
+                    )));
+                }
+            }
+            if secret.is_stored() {
+                if !secret.path.starts_with('/') {
+                    return Err(bad(format!(
+                        "secret `{}`: `{}` is not an absolute path",
+                        secret.id, secret.path
+                    )));
+                }
+                if !paths.insert(secret.path.as_str()) {
+                    return Err(bad(format!(
+                        "secret `{}`: two secrets are written to {}. The second would \
+                         overwrite the first, and which one survived would depend on the \
+                         order they were entered (§12.2)",
+                        secret.id, secret.path
+                    )));
+                }
+                let mode = secret.mode_bits().ok_or_else(|| {
+                    bad(format!(
+                        "secret `{}`: mode `{}` is not octal",
+                        secret.id, secret.mode
+                    ))
+                })?;
+                if mode & 0o022 != 0 {
+                    return Err(bad(format!(
+                        "secret `{}`: mode {} is writable beyond its owner. A credential \
+                         any local user can rewrite is a credential any local user has \
+                         (§12.2)",
+                        secret.id, secret.mode
+                    )));
+                }
+            } else if secret.apply == "none" {
+                return Err(bad(format!(
+                    "secret `{}` is neither stored nor applied, so entering it would do \
+                     nothing at all (§12.2)",
+                    secret.id
+                )));
+            }
+            if !["none", "tailscale-up"].contains(&secret.apply.as_str()) {
+                return Err(bad(format!(
+                    "secret `{}`: apply `{}` is not an action the control plane knows \
+                     (§12.2)",
+                    secret.id, secret.apply
+                )));
+            }
+        }
+
         if self.policy.rollout.peer_health_port != self.policy.health.port {
             return Err(bad(format!(
                 "the rollout predicate reads port {} but the health service is served on {} \
@@ -948,6 +1025,34 @@ impl Cluster {
         self.substitute(text)
             .expect("check_variants validates every placeholder before rendering")
     }
+}
+
+/// Whether a string looks like a credential rather than a description of one.
+///
+/// Deliberately coarse and deliberately about *shape*: long runs of
+/// base64-ish or hex characters, and the prefixes the three secrets this
+/// cluster uses actually carry. A model file is public (§9.1), so the cost of a
+/// false positive is rewording a sentence and the cost of a false negative is a
+/// published credential.
+fn looks_secret(text: &str) -> bool {
+    if text.contains("ghp_") || text.contains("github_pat_") || text.contains("tskey-") {
+        return true;
+    }
+    if text.contains("ssh-rsa ") || text.contains("ssh-ed25519 ") {
+        return true;
+    }
+    // A long unbroken run of credential-shaped characters. Prose has spaces.
+    text.split_whitespace().any(|word| {
+        word.len() >= 32
+            && word.chars().all(|c| {
+                c.is_ascii_alphanumeric()
+                    || c == '/'
+                    || c == '+'
+                    || c == '='
+                    || c == '_'
+                    || c == '-'
+            })
+    })
 }
 
 /// A CIDR prefix, parsed only far enough to reject a typo.

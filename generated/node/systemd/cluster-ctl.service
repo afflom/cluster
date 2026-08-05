@@ -19,7 +19,11 @@ ConditionPathExists=/run/cluster/role.storage
 
 [Service]
 Type=simple
-Environment=CLUSTER_CTL_BIND=10.10.255.1:8080
+Environment=CLUSTER_CTL_BIND=0.0.0.0:8080
+Environment=CLUSTER_CTL_ADVERTISED=10.10.255.1:8080
+Environment=CLUSTER_ENROLMENT=/usr/lib/cluster/enrolment.conf
+Environment=CLUSTER_ENROLMENT_ROOT=/var/lib/cluster-ctl/enrolment
+Environment=CLUSTER_ADVERTISE_ROUTES=192.168.20.0/24
 Environment=CLUSTER_CTL_DB=/var/lib/cluster-ctl/sessions.db
 Environment=CLUSTER_AUTHORIZED_LOGINS=afflom
 Environment=CLUSTER_PEERS=node3:1:http://10.10.255.3:9101/health,node2:2:http://10.10.255.2:9101/health,node1:3:http://10.10.255.1:9101/health

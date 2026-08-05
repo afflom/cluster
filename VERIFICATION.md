@@ -82,6 +82,50 @@ replaced it is what real hardware can still establish: the chassis presents the
 port counts §2.1 declares, and every peer loopback is reachable --- which is only
 true if each cable runs to the machine the addressing assumed.
 
+## The ISO could not have worked, and nothing said so
+
+Two defects shipped together, and neither was a compile error, a render
+mismatch, or anything the gate could see. Both were found by reading the release
+path rather than by running it.
+
+`bootstrap/config.toml` said `contents = "@@RENDERED_KICKSTART@@"`, and no
+workflow ever read `generated/bootstrap/node.ks`. The ISO would have carried a
+kickstart whose entire body was that literal string.
+
+Beneath it, the kickstart placed three `@@SECRET@@` values on the node, supplied
+by Actions secrets that do not exist --- `secrets.GITHUB_TOKEN` is the only
+secret any workflow references. A node would have installed the literal
+`@@AUTHORIZED_KEY@@` as root's authorized key, on a headless machine, and then
+died at `tailscale up --erroronfail`.
+
+The second is not fixed by supplying the secrets. An ISO is a release artifact
+and this repository is public (§9.1), so a secret substituted into one is
+published. The design changed instead: a node installs unenrolled and is given
+its credentials through the browser, over the LAN, authorized by the GitHub App
+device flow --- the one credential checkable without any of the others existing
+(§12.2).
+
+A third defect surfaced while fixing them, and it would have been the most
+confusing of the three. The enrolled SSH key was declared to land at
+`/etc/ssh/authorized_keys.d/root`, and `sshd -T` reports its search path as
+`.ssh/authorized_keys` and nothing else. The operator would have entered their
+key, the page would have said "given", and SSH would still have refused --- a
+total and silent failure of the way back in that §16.5 keeps for when the control
+plane is the thing that is wrong. The search pattern is now derived from the
+declared destination, so the two cannot disagree.
+
+Planting a mismatched destination does **not** fire, and that is the right
+outcome rather than a gap: the renderer computes the pattern from the path, so
+the defect is unreachable rather than caught. What fires is the renderer ceasing
+to emit the line at all, which is the reachable version of the same failure.
+
+`CL-08` is the gate whose absence let both of the first two through. It asserts that every
+placeholder in a shipping artifact has something that fills it, that the
+substitution *parses* --- the first attempt produced TOML that did not, because a
+kickstart has newlines and a single-quoted TOML string cannot --- and that no
+retired secret placeholder comes back. Both original defects were re-planted and
+both fire.
+
 ## Every gate is falsifiable
 
 A gate nobody has seen fail is indistinguishable from a gate that cannot. Before
@@ -114,6 +158,8 @@ here.
 | `CC-01` | an allowlist that admits everyone when empty | yes |
 | `CW-05` | the tunnel Feature omitting the supervisor or baking the server | yes |
 | `CI-07` | a world-writable `policy.json` in the rendered tree | yes, naming the file and the mode |
+| `CL-08` | a placeholder in the ISO config that nothing fills | yes, naming it and what would ship |
+| `CL-08` | the single-quoted TOML string the kickstart cannot fit in | yes, as a parse failure |
 
 **One plant did not fire, and that was the finding.** `CL-01` asserted the
 rendered policy's certificate identity "contains the workflow" --- and

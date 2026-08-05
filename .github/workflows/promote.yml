@@ -126,6 +126,31 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p iso
+
+          # Substitute the rendered kickstart into the builder's configuration.
+          #
+          # `bootstrap/config.toml` names it as `@@RENDERED_KICKSTART@@` and
+          # nothing used to fill it, so the ISO would have shipped a kickstart
+          # whose entire body was that literal string --- an install failure and
+          # no earlier signal at all. `CL-08` asserts this step exists.
+          #
+          # Substituted here rather than committed whole, because the kickstart
+          # is rendered from the model and diff-gated (§7.2, CD-07): a config
+          # carrying a copy of it would be a second source for the layout.
+          python3 - <<'SUBST'
+          from pathlib import Path
+          config = Path("bootstrap/config.toml").read_text()
+          kickstart = Path("generated/bootstrap/node.ks").read_text()
+          marker = "@@RENDERED_KICKSTART@@"
+          if marker not in config:
+              raise SystemExit(f"bootstrap/config.toml no longer names {marker}")
+          # A multi-line basic string, so the newlines survive. Backslashes are
+          # escaped because the kickstart uses shell line continuations, and any
+          # run of three quotes would close the string early.
+          escaped = kickstart.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+          Path("iso/config.toml").write_text(config.replace(marker, escaped))
+          SUBST
+
           # One installer, because there is one image. What the operator chooses
           # is the order machines are powered on, not which ISO to mount (§12.1).
           node=node
@@ -139,7 +164,7 @@ jobs:
             sudo podman run --rm --privileged \
               --security-opt label=type:unconfined_t \
               -v ./iso:/output \
-              -v ./bootstrap:/config:ro \
+              -v ./iso:/config:ro \
               -v /var/lib/containers/storage:/var/lib/containers/storage \
               quay.io/centos-bootc/bootc-image-builder:latest \
               --type anaconda-iso \

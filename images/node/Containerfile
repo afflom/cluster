@@ -108,6 +108,9 @@ RUN chmod 0755 /usr/lib/greenboot/check/required.d/*.sh
 # table, and the per-role firewall and kernel-argument sets it selects from
 # (§3.1, §4.1, §4.4, §8.5).
 COPY generated/node/init.conf /usr/lib/cluster/init.conf
+# Where each enrolled secret goes (§12.2). Destinations only --- no value is in
+# this image, in this repository, or in the ISO.
+COPY generated/node/enrolment.conf /usr/lib/cluster/enrolment.conf
 COPY generated/node/nftables-role-storage.conf /usr/lib/cluster/nftables-role-storage.conf
 COPY generated/node/nftables-role-compute.conf /usr/lib/cluster/nftables-role-compute.conf
 COPY generated/node/nftables-role-testbed.conf /usr/lib/cluster/nftables-role-testbed.conf

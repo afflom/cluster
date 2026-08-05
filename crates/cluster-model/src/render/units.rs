@@ -126,7 +126,29 @@ fn control_plane_service(c: &Cluster, role: &Role) -> Rendered {
         "Service",
         &[
             "Type=simple".to_string(),
-            format!("Environment=CLUSTER_CTL_BIND={}:8080", node.loopback),
+            // Every interface, not the mesh loopback alone.
+            //
+            // A machine that has just installed has no tailnet --- the auth key
+            // is one of the things the operator has yet to enter --- and no
+            // client is on the mesh. The LAN is the only route to enrolment
+            // (§12.2), so the control plane has to be reachable there.
+            //
+            // Binding is not the boundary and never was: §4.4's packet filter is,
+            // it defaults to drop, and it opens this port to the LAN prefix for
+            // the storage role alone. A bind address that pretended to be a
+            // control would be a second, weaker copy of a decision the firewall
+            // already makes.
+            "Environment=CLUSTER_CTL_BIND=0.0.0.0:8080".to_string(),
+            format!("Environment=CLUSTER_CTL_ADVERTISED={}:8080", node.loopback),
+            "Environment=CLUSTER_ENROLMENT=/usr/lib/cluster/enrolment.conf".to_string(),
+            "Environment=CLUSTER_ENROLMENT_ROOT=/var/lib/cluster-ctl/enrolment".to_string(),
+            // Only the storage node advertises the management subnet, and the
+            // mesh is never advertised (§4.5). This unit runs on the storage
+            // role alone, so the prefix is unconditional here.
+            format!(
+                "Environment=CLUSTER_ADVERTISE_ROUTES={}",
+                c.network.lan_prefix
+            ),
             "Environment=CLUSTER_CTL_DB=/var/lib/cluster-ctl/sessions.db".to_string(),
             format!(
                 "Environment=CLUSTER_AUTHORIZED_LOGINS={}",

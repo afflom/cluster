@@ -75,3 +75,13 @@ Feature: control
     Then they are served without authentication, because every one of them is public
     And the authorization states are distinct, so no code is shown that is not held
     And cross-origin access names one exact origin rather than a wildcard
+
+  @CC-09 @build
+  Scenario: A cluster says which secrets it is waiting for, and hands none back
+    Given a cluster that has been given none of its secrets
+    When the control plane is asked about enrolment
+    Then it reports each declared secret as not yet given
+    And it returns no value for any of them
+    And the page names what it is waiting for rather than reading as broken
+    And an identifier the cluster does not declare is refused, naming what it does
+    And a value carrying a newline is refused without quoting it

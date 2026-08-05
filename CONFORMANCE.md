@@ -35,6 +35,7 @@ model does not sanction.
 
 | ID | Level | Tier | Statement |
 | --- | --- | --- | --- |
+| `CC-09` | `build` | `T0` | The control plane reports which secrets a cluster has been given and never returns one, refuses an identifier it does not declare, and refuses a value that would append a line nobody typed. A cluster that has not been enrolled reads as not yet given rather than as broken. |
 | `CC-01` | `build` | `T0` | Only a login model/cluster.toml permits may drive the cluster; a caller with no Tailscale identity and a caller with an unlisted one are refused distinctly, and an empty permit list refuses everyone rather than admitting everyone. |
 | `CC-02` | `build` | `T0` | Every condition a caller of the control plane can see is one the model sanctions and carries a status that says what to do about it; none of them is an internal server error. |
 | `CC-03` | `build` | `T0` | A node that rolled back records the failed digest as quarantined, the record survives a restart, a repeated report from the same node does not duplicate it, and nodes on differing digests are reported as a split version. |
@@ -66,6 +67,7 @@ model does not sanction.
 | `CD-17` | `build` | `T0` | The policy a node configures itself from is rendered, not compiled in: the class thresholds, the addressing bases, the route metrics, the discovery parameters and the role table all reach `cluster-init` from a diff-gated artifact, and none of them is a constant in the binary that reads them. |
 | `CD-18` | `build` | `T0` | Every role's firewall include is rendered, including the empty ones, and the common ruleset includes exactly one of them. One image carries one ruleset, so an accept that holds for one role only is a file that role's marker selects rather than a rule every machine applies. |
 | `CD-19` | `build` | `T0` | Every role's kernel-argument set is rendered, including the empty ones, and the base carries none of the isolation arguments. One image boots all three roles, so an isolcpus= in the image would isolate the storage node's cores too. |
+| `CD-20` | `build` | `T0` | Every secret the operator enrols is declared with a destination and a mode, the rendered policy carries all of them, and no value appears in any model file or rendered artifact. |
 | `CD-10` | `build` | `T0` | The rendered client SSH configuration carries a devcontainer alias that resolves a session's current host from the control plane and falls back to the last known host when the control plane is unreachable. |
 
 ## hardware
@@ -102,6 +104,7 @@ model does not sanction.
 | `CL-02` | `build` | `T0` | Every registry prefix a node pulls carries a mirror on the local registry, and every fallback the model declares is rendered, so a pull continues over WAN when the local registry is unreachable. |
 | `CL-03` | `build` | `T0` | The build captures each image digest as a workflow output, promotion resolves its tag to a commit and copies that digest without rebuilding, signing precedes the copy to the stable tag, and promotions are serialised. |
 | `CL-04` | `build` | `T2` | An image in this repository's own namespace whose signature the shipped policy does not admit fails to stage, and the node is left running what it booted. |
+| `CL-08` | `build` | `T0` | Every placeholder in an artifact that ships has something that fills it, and no retired secret placeholder appears anywhere. A name nothing substitutes reaches a node as the literal string. |
 
 ## model
 

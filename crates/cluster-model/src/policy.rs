@@ -31,6 +31,47 @@ pub struct PolicyFile {
     pub tunnel: Tunnel,
     /// The health predicate's own thresholds (§10.1).
     pub health: Health,
+    /// The secrets a booted cluster is given through the browser (§12.2).
+    pub secret: Vec<Secret>,
+}
+
+/// One secret the operator enrols after the cluster boots (§12.2).
+///
+/// The row says where a value goes, never what it is. None of these is in this
+/// repository or in the image: they arrive once, through the browser client,
+/// authenticated by the GitHub App device flow --- the one credential that can
+/// be checked without any of the others existing.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Secret {
+    /// Stable identifier, used by the API and the form.
+    pub id: String,
+    /// What it is, for the operator entering it.
+    pub description: String,
+    /// Where the value lands on the node. Empty when applying it consumes the
+    /// value and keeping it would be a liability rather than a convenience.
+    pub path: String,
+    /// The mode the file takes, as an octal string.
+    pub mode: String,
+    /// What happens after it is written: `none`, or a named action.
+    pub apply: String,
+    /// What stays down until it is given, in the operator's terms.
+    pub enables: String,
+}
+
+impl Secret {
+    /// Whether the value is written to a file at all.
+    ///
+    /// A Tailscale auth key is redeemed by the command that applies it, and a
+    /// redeemed key is of no further use to this node and of some use to whoever
+    /// finds it. Not storing it is the point rather than an omission.
+    pub fn is_stored(&self) -> bool {
+        !self.path.is_empty()
+    }
+
+    /// The mode as a number, or `None` when the model does not spell one.
+    pub fn mode_bits(&self) -> Option<u32> {
+        u32::from_str_radix(self.mode.trim_start_matches("0o"), 8).ok()
+    }
 }
 
 /// Polling and the ordering predicate's timings (§13.1, §13.2).

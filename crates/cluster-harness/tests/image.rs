@@ -951,3 +951,114 @@ fn nothing_the_rendered_tree_contributes_is_world_writable_ci_07() {
         "the build must narrow the modes it copied rather than trusting them (§8.1)"
     );
 }
+
+/// `CL-08`: every placeholder in a shipping artifact has something that fills it.
+///
+/// The check whose absence let two defects ship together.
+/// `bootstrap/config.toml` said `contents = "@@RENDERED_KICKSTART@@"` and no
+/// workflow read the rendered kickstart, so the ISO would have carried a
+/// kickstart whose entire body was that literal string. Beneath it, three
+/// `@@SECRET@@` names were placed on the node by a `%post` and supplied by
+/// nothing --- `secrets.GITHUB_TOKEN` is the only secret any workflow has ever
+/// referenced. A node would have installed the literal `@@AUTHORIZED_KEY@@` as
+/// root's authorized key, on a headless machine, and then died at
+/// `tailscale up --erroronfail`.
+///
+/// Neither is a compile error, neither is a render mismatch, and both are
+/// invisible until an operator has an ISO in their hand.
+#[test]
+fn every_placeholder_in_a_shipping_artifact_is_filled_cl_08() {
+    let root = root();
+    let flows = workflows(&root);
+    let promote = flows
+        .iter()
+        .find(|w| w.name == "promote.yml")
+        .expect("promote.yml");
+
+    // The bootstrap configuration is the one artifact that legitimately carries
+    // a placeholder, because the thing that fills it is the release build.
+    let config = std::fs::read_to_string(root.join("bootstrap/config.toml"))
+        .expect("the bootc-image-builder configuration is committed");
+    let placeholder = cluster_model::render::KICKSTART_PLACEHOLDER;
+    if config.contains(placeholder) {
+        assert!(
+            promote.does(placeholder),
+            "bootstrap/config.toml carries `{placeholder}` and promote.yml never mentions \
+             it. The ISO would ship a kickstart whose body is that literal string, which \
+             fails at install and nowhere earlier (§12.1)"
+        );
+        assert!(
+            promote.does("generated/bootstrap/node.ks"),
+            "whatever fills `{placeholder}` must read the rendered kickstart, or it is \
+             substituting something else (§7.2)"
+        );
+
+        // And the result has to parse. A kickstart has newlines and a
+        // single-quoted TOML string cannot hold one, so the first substitution
+        // produced a configuration the builder would have rejected --- at ISO
+        // build time, and nowhere earlier. The placeholder sits in a multi-line
+        // string for that reason, and this is the assertion that keeps it there.
+        let filled = config.replace(
+            placeholder,
+            &std::fs::read_to_string(root.join("generated/bootstrap/node.ks"))
+                .expect("the kickstart is rendered")
+                .replace('\\', "\\\\")
+                .replace("\"\"\"", "\\\"\\\"\\\""),
+        );
+        let parsed: toml::Value = filled.parse().unwrap_or_else(|e| {
+            panic!(
+                "substituting the kickstart into bootstrap/config.toml produces TOML that \
+                 does not parse: {e}. The builder would refuse it at ISO build time and \
+                 nothing earlier would say so"
+            )
+        });
+        let contents = parsed
+            .get("customizations")
+            .and_then(|c| c.get("installer"))
+            .and_then(|i| i.get("kickstart"))
+            .and_then(|k| k.get("contents"))
+            .and_then(|c| c.as_str())
+            .expect("the configuration carries the kickstart");
+        assert!(
+            contents.contains("clearpart --all"),
+            "the substituted kickstart must survive escaping intact"
+        );
+        assert!(
+            !contents.contains("@@"),
+            "no placeholder may survive the substitution"
+        );
+    }
+
+    // Every other placeholder anywhere in a shipping artifact is a name nothing
+    // fills. The retired ones are called out by name, because a gate that says
+    // *why* is worth more than one that says only *no*.
+    let shipped = [
+        ("bootstrap/config.toml", config.clone()),
+        (
+            "generated/bootstrap/node.ks",
+            std::fs::read_to_string(root.join("generated/bootstrap/node.ks"))
+                .expect("the kickstart is rendered"),
+        ),
+    ];
+    for (name, text) in &shipped {
+        for retired in cluster_model::render::RETIRED_PLACEHOLDERS {
+            assert!(
+                !text.contains(retired),
+                "{name} carries `{retired}`. It stood for a secret substituted into the \
+                 ISO at build time, and an ISO is a release artifact --- a secret placed \
+                 in one is published to whoever downloads it (§9.1, §12.2)"
+            );
+        }
+    }
+
+    // And the kickstart names no secret at all: a node comes up unenrolled and
+    // is given its credentials through the browser (§12.2).
+    let kickstart = &shipped[1].1;
+    for forbidden in ["auth.json", "authorized_keys", "tailscale up", "--auth-key"] {
+        assert!(
+            !kickstart.contains(forbidden),
+            "the kickstart mentions `{forbidden}`. Credentials reach a node through the \
+             browser after it boots, not through a release artifact (§12.2)"
+        );
+    }
+}

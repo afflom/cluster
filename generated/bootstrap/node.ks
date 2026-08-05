@@ -6,9 +6,9 @@
 # The kickstart every machine is installed from. One image means one
 # installer and nothing to select at install time (§8.4, §12.1).
 #
-# The installer substitutes the three @@PLACEHOLDER@@ values below from
-# Actions secrets at ISO build time; none of them is committed, and CD-07
-# asserts that (§12.2).
+# It carries no credentials and substitutes nothing. A node comes up
+# unenrolled and is given its secrets through the browser, over the LAN,
+# after it boots (§12.2, §16.2).
 #
 # The ISO's SHA-256 is published in the release and verified out of band.
 # That checksum is the root of trust: §12.3's signature policy ships inside
@@ -80,25 +80,20 @@ elif [ -n "$cache" ]; then
 fi
 %end
 
-# Injected at ISO build time. Names here, values never.
-%post --erroronfail
-install -d -m 0700 /root/.ssh
-printf '%s\n' '@@AUTHORIZED_KEY@@' > /root/.ssh/authorized_keys
-chmod 0600 /root/.ssh/authorized_keys
-
-install -d -m 0700 /etc/containers
-printf '%s\n' '@@GHCR_PULL_TOKEN@@' > /etc/containers/auth.json
-chmod 0600 /etc/containers/auth.json
-
-# Ephemeral and single-use: the key is spent by this one install (§12.2).
+# The node installs with no credentials and comes up **unenrolled**.
 #
-# The subnet route is advertised only by the storage node, and which machine
-# that is is not known yet --- so it is advertised at first boot by
-# cluster-init, once the role is, rather than guessed at here. The mesh is
-# never advertised (§4.5).
-tailscale up --auth-key '@@TAILSCALE_AUTH_KEY@@' --advertise-tags=tag:cluster
-%end
-
+# There is nothing to substitute here and nothing withheld. The ISO is a
+# release artifact, so a secret placed in one is published to whoever
+# downloads it --- and this repository is public (§9.1).
+#
+# What an unenrolled node has is the control plane, reachable over the LAN.
+# The operator opens it in a browser, authenticates with the GitHub App
+# device flow --- the one credential checkable without any of the others
+# existing --- and enters the rest (§12.2, §16.2):
+#
+#   ssh_authorized_key --- The operator's SSH public key, enabling SSH, which §16.5 keeps as the way back in when the control plane is the thing that is wrong
+#   registry_pull_token --- A GHCR token with read:packages and nothing else, enabling pulling the images §13 applies unattended
+#   tailnet_auth_key --- A Tailscale auth key, ephemeral and single-use, enabling off-LAN access, and the tailnet the control plane is published on (§4.5, §16.2)
 # The node is not considered provisioned until the predicate passes (§12.1).
 %post --erroronfail --nochroot
 echo 'cluster-health must pass before this node is in service'

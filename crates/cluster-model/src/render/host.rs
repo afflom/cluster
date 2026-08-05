@@ -13,8 +13,48 @@
 use crate::render::{node_path, section, Rendered};
 use crate::Cluster;
 
+/// The secrets the operator enrols, and where each lands (§12.2).
+///
+/// Rendered rather than compiled into `cluster-ctl` for the reason every other
+/// policy here is: a destination path in both the model and a binary is two
+/// sources for it, and the one that drifts is the one nobody reads. The values
+/// are not here and are in no artifact --- what is here is where they go.
+fn enrolment(c: &Cluster) -> Rendered {
+    let mut body = String::new();
+    body.push_str(
+        "# What an operator enters after the cluster boots, and where each value\n\
+         # lands (§12.2).\n\
+         #\n\
+         # None of these is in this repository and none is in the image. They\n\
+         # reach a node once, through the browser client over the LAN, authorized\n\
+         # by the GitHub App device flow --- the one credential that can be checked\n\
+         # without any of the others existing (§16.2).\n\
+         #\n\
+         # They were `@@PLACEHOLDER@@` names in the kickstart, substituted at ISO\n\
+         # build time from Actions secrets that did not exist. A node would have\n\
+         # installed the literal string as its authorized key and died at\n\
+         # `tailscale up --erroronfail`. And an ISO is a release artifact: a secret\n\
+         # put in one is published to whoever downloads it (§9.1).\n\
+         #\n\
+         # id:path:mode:apply --- an empty path means the value is spent by\n\
+         # applying it and deliberately not kept.\n\n",
+    );
+    for secret in &c.policy.secret {
+        body.push_str(&format!(
+            "# {} --- {}. Without it: {} stays down.\n",
+            secret.id, secret.description, secret.enables
+        ));
+        body.push_str(&format!(
+            "secret={}:{}:{}:{}\n",
+            secret.id, secret.path, secret.mode, secret.apply
+        ));
+    }
+    Rendered::new(node_path("enrolment.conf"), vec!["CD-20"], body)
+}
+
 pub(crate) fn render(c: &Cluster) -> Vec<Rendered> {
     vec![
+        enrolment(c),
         sshd(c),
         selinux(c),
         greenboot(c),
@@ -130,7 +170,29 @@ fn sshd(c: &Cluster) -> Rendered {
     let s = &c.images.base.sshd;
     let no = |allowed: bool| if allowed { "yes" } else { "no" };
 
-    let body = format!(
+    // Where the enrolled key lands, turned into the pattern sshd searches.
+    //
+    // Derived from the secret's declared destination rather than written twice.
+    // `sshd`'s built-in default is `.ssh/authorized_keys` and nothing else, so a
+    // key enrolled to `/etc/ssh/authorized_keys.d/root` would land somewhere
+    // sshd never looks --- the operator enters it, the page says "given", and
+    // SSH still refuses. That is a silent, total failure of the way back in that
+    // §16.5 keeps for when the control plane is the thing that is wrong.
+    let enrolled_keys = c
+        .policy
+        .secret
+        .iter()
+        .find(|secret| secret.id == "ssh_authorized_key")
+        .filter(|secret| secret.is_stored())
+        .map(|secret| {
+            let dir = secret
+                .path
+                .rsplit_once('/')
+                .map_or("/etc/ssh/authorized_keys.d", |(dir, _)| dir);
+            format!("{dir}/%u")
+        });
+
+    let mut body = format!(
         "# Key-only SSH. A password-accepting sshd on a node that reboots\n\
          # unattended is an invitation, and there is no operator present to notice\n\
          # (§8.1).\n\
@@ -146,9 +208,24 @@ fn sshd(c: &Cluster) -> Rendered {
         no(s.kbd_interactive_authentication),
         s.permit_root_login
     );
+    if let Some(pattern) = enrolled_keys {
+        body.push_str(&format!(
+            "\n# Where an enrolled key lands, and therefore where sshd looks (§12.2).\n\
+             #\n\
+             # sshd's default is `.ssh/authorized_keys` and nothing else. Without this\n\
+             # line the key an operator enters through the browser goes somewhere sshd\n\
+             # never reads: the page says it was given and SSH still refuses --- a total\n\
+             # and silent failure of the way back in §16.5 keeps for when the control\n\
+             # plane is the thing that is wrong.\n\
+             #\n\
+             # The default is kept alongside it, so a key placed the ordinary way still\n\
+             # works.\n\
+             AuthorizedKeysFile .ssh/authorized_keys {pattern}\n"
+        ));
+    }
     Rendered::new(
         node_path("sshd_config.d/10-cluster.conf"),
-        vec!["CD-14"],
+        vec!["CD-14", "CD-20"],
         body,
     )
 }

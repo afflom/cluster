@@ -24,7 +24,7 @@ mod ssh;
 mod trust;
 mod units;
 
-pub use kickstart::SECRET_PLACEHOLDERS;
+pub use kickstart::{KICKSTART_PLACEHOLDER, RETIRED_PLACEHOLDERS};
 
 use crate::Cluster;
 

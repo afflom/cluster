@@ -14,18 +14,44 @@
 //! installer prepares bulk storage where it finds bulk storage, prepares a plain
 //! filesystem where it does not, and leaves the rest to first boot.
 //!
-//! **No secret appears here.** The authorized key, the registry PAT and the
-//! Tailscale auth key are injected at install time from Actions secrets (§12.2).
-//! A kickstart is a plain-text file committed to a repository, and a secret in
-//! one is a secret published --- `CD-07` asserts the absence rather than trusting
-//! it.
+//! **No secret appears here, and none is injected here either.** An earlier
+//! revision carried three `@@PLACEHOLDER@@` names to be substituted at ISO build
+//! time from Actions secrets. Two things were wrong with it.
+//!
+//! The Actions secrets did not exist. Nothing in any workflow supplied them, so
+//! a node would have installed the literal string `@@AUTHORIZED_KEY@@` as root's
+//! authorized key --- locked out, on a headless machine --- and then died at
+//! `tailscale up --erroronfail`, taking the install with it.
+//!
+//! And the design could not work for a public repository even with the secrets
+//! present. The ISO is a release artifact: a secret substituted into one is a
+//! secret published to whoever downloads it (§9.1).
+//!
+//! So the node installs with no credentials at all and comes up *unenrolled*.
+//! The operator reaches the control plane over the LAN, authenticates with the
+//! GitHub App device flow --- the one credential that can be checked without any
+//! of the others existing --- and enters the rest through the browser (§12.2,
+//! §16.2). `CD-07` asserts that nothing secret-shaped is in this file, and
+//! `CL-08` asserts that no shipped artifact carries a placeholder nothing fills.
 
 use crate::render::Rendered;
 use crate::Cluster;
 
-/// The placeholders the installer substitutes. They are names, not values, and
-/// `CD-07` reads this list to assert that nothing else secret-shaped is present.
-pub const SECRET_PLACEHOLDERS: &[&str] = &[
+/// The one placeholder anything still substitutes, and where.
+///
+/// The ISO build replaces it with the rendered kickstart, in
+/// `bootstrap/config.toml`. It is here so that `CL-08` can assert every
+/// placeholder in a shipped artifact has something that fills it --- the check
+/// whose absence let a kickstart ship as the literal string
+/// `@@RENDERED_KICKSTART@@`.
+pub const KICKSTART_PLACEHOLDER: &str = "@@RENDERED_KICKSTART@@";
+
+/// Placeholders that must appear in no rendered artifact.
+///
+/// Retired names, kept so the gate can say *why* one coming back is wrong rather
+/// than only that it is. Each of these once stood for a secret substituted at
+/// ISO build time, which is a secret published in a release artifact (§9.1).
+pub const RETIRED_PLACEHOLDERS: &[&str] = &[
     "@@AUTHORIZED_KEY@@",
     "@@GHCR_PULL_TOKEN@@",
     "@@TAILSCALE_AUTH_KEY@@",
@@ -43,9 +69,9 @@ pub(crate) fn render(c: &Cluster) -> Rendered {
         "# The kickstart every machine is installed from. One image means one\n\
          # installer and nothing to select at install time (§8.4, §12.1).\n\
          #\n\
-         # The installer substitutes the three @@PLACEHOLDER@@ values below from\n\
-         # Actions secrets at ISO build time; none of them is committed, and CD-07\n\
-         # asserts that (§12.2).\n\
+         # It carries no credentials and substitutes nothing. A node comes up\n\
+         # unenrolled and is given its secrets through the browser, over the LAN,\n\
+         # after it boots (§12.2, §16.2).\n\
          #\n\
          # The ISO's SHA-256 is published in the release and verified out of band.\n\
          # That checksum is the root of trust: §12.3's signature policy ships inside\n\
@@ -168,36 +194,26 @@ pub(crate) fn render(c: &Cluster) -> Rendered {
     body.push_str("fi\n");
     body.push_str("%end\n\n");
 
-    // ---- secrets, by placeholder only (§12.2) ----
-    body.push_str("# Injected at ISO build time. Names here, values never.\n");
-    body.push_str("%post --erroronfail\n");
-    body.push_str("install -d -m 0700 /root/.ssh\n");
+    // ---- no credentials, deliberately (§12.2) ----
     body.push_str(&format!(
-        "printf '%s\\n' '{}' > /root/.ssh/authorized_keys\n",
-        SECRET_PLACEHOLDERS[0]
-    ));
-    body.push_str("chmod 0600 /root/.ssh/authorized_keys\n\n");
-
-    body.push_str("install -d -m 0700 /etc/containers\n");
-    body.push_str(&format!(
-        "printf '%s\\n' '{}' > /etc/containers/auth.json\n",
-        SECRET_PLACEHOLDERS[1]
-    ));
-    body.push_str("chmod 0600 /etc/containers/auth.json\n\n");
-
-    body.push_str(
-        "# Ephemeral and single-use: the key is spent by this one install (§12.2).\n\
+        "# The node installs with no credentials and comes up **unenrolled**.\n\
          #\n\
-         # The subnet route is advertised only by the storage node, and which machine\n\
-         # that is is not known yet --- so it is advertised at first boot by\n\
-         # cluster-init, once the role is, rather than guessed at here. The mesh is\n\
-         # never advertised (§4.5).\n",
-    );
-    body.push_str(&format!(
-        "tailscale up --auth-key '{}' --advertise-tags=tag:cluster\n",
-        SECRET_PLACEHOLDERS[2]
+         # There is nothing to substitute here and nothing withheld. The ISO is a\n\
+         # release artifact, so a secret placed in one is published to whoever\n\
+         # downloads it --- and this repository is public (§9.1).\n\
+         #\n\
+         # What an unenrolled node has is the control plane, reachable over the LAN.\n\
+         # The operator opens it in a browser, authenticates with the GitHub App\n\
+         # device flow --- the one credential checkable without any of the others\n\
+         # existing --- and enters the rest (§12.2, §16.2):\n\
+         #\n{}\n",
+        c.policy
+            .secret
+            .iter()
+            .map(|s| format!("#   {} --- {}, enabling {}", s.id, s.description, s.enables))
+            .collect::<Vec<_>>()
+            .join("\n")
     ));
-    body.push_str("%end\n\n");
 
     body.push_str(
         "# The node is not considered provisioned until the predicate passes (§12.1).\n\

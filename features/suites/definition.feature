@@ -160,3 +160,11 @@ Feature: definition
     Then a set is rendered for every role
     And the isolating role's set carries its arguments
     And the sets for the other roles are empty rather than absent
+
+  @CD-20 @build
+  Scenario: The enrolled secrets are declared by destination, never by value
+    Given secrets the operator enters after the cluster boots
+    When the enrolment policy is rendered
+    Then every declared secret appears with its destination and mode
+    And no destination is writable beyond its owner
+    And no model file or rendered artifact carries a value

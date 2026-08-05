@@ -282,6 +282,17 @@ so an isolcpus= in the image would isolate the storage node's cores too.
 """
 
 [[id]]
+id = "CD-20"
+level = "build"
+suite = "definition"
+tier = "T0"
+statement = """
+Every secret the operator enrols is declared with a destination and a mode, the
+rendered policy carries all of them, and no value appears in any model file or
+rendered artifact.
+"""
+
+[[id]]
 id = "CD-10"
 level = "build"
 suite = "definition"
@@ -619,6 +630,29 @@ statement = """
 Exactly one role marker exists on a booted node, every unit belonging to another
 role is inactive rather than failed, and no unit belonging to this node's role
 was skipped.
+"""
+
+[[id]]
+id = "CL-08"
+level = "build"
+suite = "lifecycle"
+tier = "T0"
+statement = """
+Every placeholder in an artifact that ships has something that fills it, and no
+retired secret placeholder appears anywhere. A name nothing substitutes reaches
+a node as the literal string.
+"""
+
+[[id]]
+id = "CC-09"
+level = "build"
+suite = "control"
+tier = "T0"
+statement = """
+The control plane reports which secrets a cluster has been given and never
+returns one, refuses an identifier it does not declare, and refuses a value that
+would append a line nobody typed. A cluster that has not been enrolled reads as
+not yet given rather than as broken.
 """
 
 [[id]]

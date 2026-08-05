@@ -61,3 +61,11 @@ Feature: lifecycle
     When each is read
     Then every such job refuses a pull request from another repository
     And the guard is present whether or not the fleet is currently registered
+
+  @CL-08 @build
+  Scenario: No shipped artifact carries a placeholder nothing fills
+    Given a bootstrap configuration naming a placeholder
+    When the artifacts that ship are read
+    Then something in the release path substitutes that placeholder
+    And no retired secret placeholder appears in any of them
+    And the rendered kickstart names no secret at all

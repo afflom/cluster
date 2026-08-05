@@ -278,3 +278,56 @@ port = 9101
 # fails if anything on the path is not carrying jumbo frames (§10.1).
 mesh_mtu_probe_bytes = 8972
 chrony_max_offset_ms = 100
+
+# ---------------------------------------------------------------------------
+# Enrolment: the secrets a booted cluster is given, and where each one lands
+# (SPEC.md §12.2).
+#
+# **None of these is in this repository, and none is in the image.** They are
+# entered by the operator through the browser client after the cluster boots,
+# over the LAN, authenticated by the GitHub App device flow (§16.2) --- which is
+# the one credential that can be checked without any of the others existing.
+#
+# They used to be `@@PLACEHOLDER@@` names in the kickstart, substituted at ISO
+# build time from Actions secrets. Two things were wrong with that. The Actions
+# secrets did not exist, so a node would have installed the literal placeholder
+# as its authorized key and died at `tailscale up --erroronfail`. And the design
+# it assumed cannot work for a public repository: the ISO is a release artifact,
+# and a secret substituted into one is a secret published to whoever downloads
+# it.
+#
+# What is declared here is where each secret *goes*, never what it is. The
+# rendered enrolment policy carries these rows; the values reach the node once,
+# over the browser, and stay on it.
+# ---------------------------------------------------------------------------
+
+[[secret]]
+id = "ssh_authorized_key"
+description = "The operator's SSH public key"
+# A public key, and the only one of the three that is not secret at all. It is
+# enrolled the same way because it is a *per-operator* fact, not a cluster one:
+# putting it in the repository would tie a public artifact to one person's
+# device.
+path = "/etc/ssh/authorized_keys.d/root"
+mode = "0644"
+apply = "none"
+enables = "SSH, which §16.5 keeps as the way back in when the control plane is the thing that is wrong"
+
+[[secret]]
+id = "registry_pull_token"
+description = "A GHCR token with read:packages and nothing else"
+path = "/etc/containers/auth.json"
+mode = "0600"
+apply = "none"
+enables = "pulling the images §13 applies unattended"
+
+[[secret]]
+id = "tailnet_auth_key"
+description = "A Tailscale auth key, ephemeral and single-use"
+# Spent by the command that applies it and deliberately not kept: a key that has
+# been redeemed is of no further use to this node and of some use to anyone who
+# finds it (§12.2).
+path = ""
+mode = "0600"
+apply = "tailscale-up"
+enables = "off-LAN access, and the tailnet the control plane is published on (§4.5, §16.2)"

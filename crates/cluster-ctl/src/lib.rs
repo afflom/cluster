@@ -35,6 +35,8 @@ pub mod api;
 pub mod store;
 
 pub mod auth;
+/// The secrets an operator gives a booted cluster (§12.2).
+pub mod enrolment;
 #[cfg(feature = "server")]
 pub mod github;
 pub mod reclaim;
@@ -92,6 +94,37 @@ pub enum ApiError {
         /// What the store said.
         because: String,
     },
+    /// The rendered enrolment policy could not be read or makes no sense
+    /// (§12.2).
+    ///
+    /// Distinct from the store being unavailable: this one says the *cluster*
+    /// cannot be given its secrets at all, which is a different thing to fix
+    /// from a database that will not open.
+    EnrolmentUnavailable {
+        /// What is wrong with the policy.
+        because: String,
+    },
+    /// The caller named a secret this cluster does not declare (§12.2).
+    ///
+    /// A refusal rather than a silent miss: a form posting an identifier this
+    /// model does not have was built against a different one, and writing the
+    /// value somewhere plausible would be worse than not writing it.
+    UnknownSecret {
+        /// What was named.
+        id: String,
+        /// What is declared, so the caller can see the difference.
+        known: Vec<String>,
+    },
+    /// The value cannot be a credential (§12.2).
+    ///
+    /// **Never quotes the value.** An error goes to a log, and a log is read by
+    /// more people than a credential should be.
+    RejectedSecret {
+        /// Which secret was being enrolled.
+        id: String,
+        /// What is wrong with the value, in terms that do not include it.
+        because: String,
+    },
 }
 
 impl fmt::Display for ApiError {
@@ -113,6 +146,23 @@ impl fmt::Display for ApiError {
                 f,
                 "{attempted}: the session store is unavailable: {because}"
             ),
+            Self::EnrolmentUnavailable { because } => write!(
+                f,
+                "this cluster cannot be enrolled: {because}. The secrets an operator \
+                 enters are declared in model/policy.toml and rendered into \
+                 enrolment.conf (§12.2)"
+            ),
+            Self::UnknownSecret { id, known } => write!(
+                f,
+                "`{id}` is not a secret this cluster declares. It declares: {}",
+                known.join(", ")
+            ),
+            Self::RejectedSecret { id, because } => {
+                write!(
+                    f,
+                    "the value offered for `{id}` was refused because {because}"
+                )
+            }
         }
     }
 }
@@ -132,6 +182,9 @@ impl ApiError {
             Self::NotFound { .. } => 404,
             Self::NotPermitted { .. } => 409,
             Self::StoreUnavailable { .. } => 503,
+            Self::EnrolmentUnavailable { .. } => 503,
+            Self::UnknownSecret { .. } => 404,
+            Self::RejectedSecret { .. } => 400,
         }
     }
 }

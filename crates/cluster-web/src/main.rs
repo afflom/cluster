@@ -25,6 +25,7 @@
 //! the control plane, resolving to the last known host (§16.5). Only
 //! migration-aware resolution degrades.
 
+use cluster_ctl::enrolment::EnrolmentState;
 use leptos::prelude::*;
 
 use cluster_ctl::session::SessionState;
@@ -150,6 +151,42 @@ pub fn idle_label(seconds: u64) -> String {
     }
 }
 
+/// What the enrolment panel should say about one secret.
+///
+/// A cluster that has not been enrolled is not broken and must not read as
+/// broken: it is a cluster nobody has given its credentials to yet, which is the
+/// state every cluster starts in (§12.2). The wording distinguishes "not given"
+/// from "not working", because an operator who cannot tell those apart starts
+/// debugging a machine that is fine.
+pub fn enrolment_label(present: bool) -> &'static str {
+    if present {
+        "given"
+    } else {
+        "not given yet"
+    }
+}
+
+/// The one sentence a partly-enrolled cluster shows.
+///
+/// It names what is still needed rather than reporting a count, because a count
+/// is a number to look up and a name is a thing to go and do.
+pub fn enrolment_summary(state: &EnrolmentState) -> String {
+    if state.complete {
+        return "Every secret this cluster needs has been given.".to_string();
+    }
+    let missing: Vec<&str> = state
+        .secrets
+        .iter()
+        .filter(|s| !s.present)
+        .map(|s| s.id.as_str())
+        .collect();
+    format!(
+        "This cluster is waiting for {}. Until then it pulls no images, joins no \
+         tailnet, and admits no SSH.",
+        missing.join(", ")
+    )
+}
+
 /// The page.
 #[component]
 fn App() -> impl IntoView {
@@ -157,11 +194,53 @@ fn App() -> impl IntoView {
     // browser off the tailnet sees the disconnected state immediately rather
     // than a spinner that never resolves.
     let (sessions, _set_sessions) = signal(Connection::<Vec<cluster_ctl::Session>>::Loading);
+    let (enrolment, _set_enrolment) = signal(Connection::<EnrolmentState>::Loading);
 
     view! {
         <main>
             <h1>"cluster"</h1>
             <p class="api">{api_base()}</p>
+
+            // Enrolment first, and above the sessions, because a cluster that
+            // has not been given its secrets has no sessions to show and the
+            // reason is here rather than in an empty list (§12.2).
+            <section class="enrolment">
+                <h2>"Secrets"</h2>
+                {move || match enrolment.get() {
+                    Connection::Loading => view! { <p>"Asking the control plane…"</p> }.into_any(),
+                    Connection::Unreachable { detail } => view! {
+                        <section class="disconnected">
+                            <p>{Connection::<()>::UNREACHABLE_MESSAGE}</p>
+                            <p class="detail">{detail}</p>
+                        </section>
+                    }
+                    .into_any(),
+                    Connection::Connected(state) => view! {
+                        <p class="summary">{enrolment_summary(&state)}</p>
+                        <ul>
+                            {state
+                                .secrets
+                                .iter()
+                                .map(|s| {
+                                    let label = enrolment_label(s.present);
+                                    let id = s.id.clone();
+                                    view! {
+                                        <li>
+                                            {id.clone()}" — "{label}
+                                            // A password field, so a shoulder and a
+                                            // screen recording see nothing, and no
+                                            // value is ever rendered back into it:
+                                            // the API does not return one.
+                                            <input type="password" name={id} autocomplete="off" />
+                                        </li>
+                                    }
+                                })
+                                .collect::<Vec<_>>()}
+                        </ul>
+                    }
+                    .into_any(),
+                }}
+            </section>
             {move || match sessions.get() {
                 Connection::Loading => view! { <p>"Asking the control plane…"</p> }.into_any(),
                 Connection::Unreachable { detail } => view! {
@@ -280,5 +359,72 @@ mod tests {
         assert_eq!(idle_label(600), "10 min");
         assert_eq!(idle_label(7_200), "2 h");
         assert_eq!(idle_label(60 * 60 * 24 * 31), "31 days");
+    }
+}
+
+#[cfg(test)]
+mod enrolment_tests {
+    use super::*;
+    use cluster_ctl::enrolment::SlotState;
+
+    fn state(pairs: &[(&str, bool)]) -> EnrolmentState {
+        EnrolmentState::of(
+            pairs
+                .iter()
+                .map(|(id, present)| SlotState {
+                    id: (*id).to_string(),
+                    present: *present,
+                })
+                .collect(),
+        )
+    }
+
+    /// `CC-09`: an unenrolled cluster reads as not-yet-given, not as broken.
+    ///
+    /// Every cluster starts in this state. An operator who cannot tell "nobody
+    /// has given it credentials" from "it is failing" starts debugging a machine
+    /// that is fine --- which is the same failure `CC-05`'s disconnected state
+    /// exists to prevent, one step earlier in the life of a cluster.
+    #[test]
+    fn an_unenrolled_cluster_does_not_read_as_broken_cc_09() {
+        let s = state(&[("ssh_authorized_key", false), ("tailnet_auth_key", false)]);
+        assert!(!s.complete);
+
+        let summary = enrolment_summary(&s);
+        // It names what is missing, because a name is a thing to go and do and a
+        // count is a number to look up.
+        assert!(summary.contains("ssh_authorized_key"), "{summary}");
+        assert!(summary.contains("tailnet_auth_key"), "{summary}");
+        // And it says what that costs, so the consequence is not left implicit.
+        assert!(summary.contains("no images"), "{summary}");
+        for alarming in ["error", "failed", "broken", "unhealthy"] {
+            assert!(
+                !summary.to_lowercase().contains(alarming),
+                "a cluster nobody has enrolled is not {alarming}: {summary}"
+            );
+        }
+
+        assert_eq!(enrolment_label(false), "not given yet");
+        assert_eq!(enrolment_label(true), "given");
+    }
+
+    #[test]
+    fn a_fully_enrolled_cluster_says_so_plainly_cc_09() {
+        let s = state(&[("ssh_authorized_key", true), ("tailnet_auth_key", true)]);
+        assert!(s.complete);
+        let summary = enrolment_summary(&s);
+        assert!(summary.contains("Every secret"), "{summary}");
+        assert!(!summary.contains("waiting"), "{summary}");
+    }
+
+    /// The state a browser receives carries presence and no value, which is the
+    /// whole of what the API will say. There is no route that returns one.
+    #[test]
+    fn the_state_a_browser_receives_carries_no_value_cc_09() {
+        let s = state(&[("registry_pull_token", true)]);
+        let json = serde_json::to_string(&s).expect("it serialises");
+        assert!(json.contains("registry_pull_token"));
+        assert!(json.contains("\"present\":true"));
+        assert!(!json.contains("value"), "{json}");
     }
 }

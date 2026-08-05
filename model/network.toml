@@ -165,6 +165,24 @@ port = 22
 source = "tailnet"
 comment = "SSH off-LAN"
 
+# The control plane, on the LAN, for enrolment (§12.2).
+#
+# A machine that has just installed has no tailnet --- the auth key is one of the
+# things the operator has yet to enter --- and no client is on the mesh. The LAN
+# is the only route to the control plane at that moment, and without this rule
+# there is no way to give a cluster its secrets at all.
+#
+# The same prefix already reaches SSH on every node (above), so this widens no
+# boundary the LAN did not already have; and authorization is the GitHub App
+# device flow on top of it (§16.2), not the network.
+[[firewall.rule]]
+plane = "lan"
+protocol = "tcp"
+port = 8080
+source = "lan"
+roles = ["storage"]
+comment = "cluster-ctl, for enrolment over the LAN before the tailnet exists"
+
 # Restricted to a role rather than to a node, and therefore not in the ruleset
 # every machine carries. One image means one `nftables.conf`, so a rule that is
 # true of one role only is rendered into its own include and linked into place

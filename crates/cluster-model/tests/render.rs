@@ -410,10 +410,27 @@ fn the_kickstart_carries_no_secret_cd_07() {
             );
         }
 
-        for placeholder in cluster_model::render::SECRET_PLACEHOLDERS {
+        // The kickstart names no secret at all, not even as a placeholder.
+        //
+        // It carried three, substituted at ISO build time from Actions secrets
+        // that did not exist --- so a node would have installed the literal
+        // `@@AUTHORIZED_KEY@@` as root's authorized key, on a headless machine,
+        // and then died at `tailscale up --erroronfail`. And an ISO is a release
+        // artifact: a secret put in one is published to whoever downloads it
+        // (§9.1). Credentials reach a node through the browser after it boots
+        // (§12.2).
+        for placeholder in cluster_model::render::RETIRED_PLACEHOLDERS {
             assert!(
-                ks.body.contains(placeholder),
-                "{}: {placeholder} must appear as a placeholder (§12.2)",
+                !ks.body.contains(placeholder),
+                "{}: {placeholder} is retired and must not come back (§12.2)",
+                node.name
+            );
+        }
+        for forbidden in ["auth.json", "authorized_keys", "--auth-key"] {
+            assert!(
+                !ks.body.contains(forbidden),
+                "{}: the kickstart mentions `{forbidden}`; a node installs unenrolled \
+                 (§12.2)",
                 node.name
             );
         }
@@ -1354,4 +1371,111 @@ fn read_crate_source(name: &str) -> String {
         }
     }
     out
+}
+
+/// `CD-20`: the enrolled secrets are declared by destination, never by value.
+///
+/// The row says where a value goes. The values arrive once, through the browser,
+/// after the cluster boots (§12.2) --- they were `@@PLACEHOLDER@@` names in the
+/// kickstart, substituted at ISO build time from Actions secrets that did not
+/// exist, and an ISO is a release artifact besides.
+#[test]
+fn the_enrolled_secrets_are_declared_by_destination_cd_20() {
+    let c = model();
+    let files = rendered();
+
+    let policy = files
+        .iter()
+        .find(|f| f.path == "node/enrolment.conf")
+        .expect("the enrolment policy is rendered");
+
+    assert!(
+        !c.policy.secret.is_empty(),
+        "a cluster that enrols nothing pulls from nothing and joins no tailnet"
+    );
+    for secret in &c.policy.secret {
+        let row = format!(
+            "secret={}:{}:{}:{}",
+            secret.id, secret.path, secret.mode, secret.apply
+        );
+        assert!(
+            policy.body.contains(&row),
+            "the rendered policy must carry `{row}`, or cluster-ctl would need its own \
+             copy of the destination (§12.2)"
+        );
+        if secret.is_stored() {
+            let mode = secret.mode_bits().expect("the model check requires octal");
+            assert_eq!(
+                mode & 0o022,
+                0,
+                "`{}` lands at {} with mode {}: a credential any local user can rewrite \
+                 is a credential any local user has",
+                secret.id,
+                secret.path,
+                secret.mode
+            );
+        }
+    }
+
+    // The enrolled SSH key lands where sshd actually looks.
+    //
+    // sshd's built-in default is `.ssh/authorized_keys` and nothing else, so a
+    // key enrolled to `/etc/ssh/authorized_keys.d/root` would go somewhere it
+    // never reads --- the operator enters it, the page says "given", and SSH
+    // still refuses. A silent, total failure of the way back in that §16.5
+    // keeps for when the control plane is the thing that is wrong.
+    if let Some(key) = c
+        .policy
+        .secret
+        .iter()
+        .find(|s| s.id == "ssh_authorized_key")
+        .filter(|s| s.is_stored())
+    {
+        let sshd = files
+            .iter()
+            .find(|f| f.path == "node/sshd_config.d/10-cluster.conf")
+            .expect("the sshd policy is rendered");
+        let directory = key
+            .path
+            .rsplit_once('/')
+            .map(|(dir, _)| dir)
+            .expect("an absolute destination has a directory");
+        let searched: Vec<&str> = sshd
+            .body
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("AuthorizedKeysFile "))
+            .expect(
+                "the sshd policy must say where to look, or an enrolled key lands \
+                 somewhere sshd never reads (§12.2, §16.5)",
+            )
+            .split_whitespace()
+            .collect();
+        assert!(
+            searched
+                .iter()
+                .any(|p| p.starts_with(directory) && p.ends_with("%u")),
+            "the enrolled key lands in {directory} and sshd searches {searched:?}. A key \
+             the operator entered would be ignored, and the page would say it was given \
+             (§12.2, §16.5)"
+        );
+        // The ordinary place still works, so a key placed by hand is not broken
+        // by making room for an enrolled one.
+        assert!(
+            searched.contains(&".ssh/authorized_keys"),
+            "sshd's default must be kept alongside: {searched:?}"
+        );
+    }
+
+    // And no value anywhere. The whole point of enrolment is that this
+    // repository is public and these do not belong in it (§9.1).
+    for file in &files {
+        for marker in ["ghp_", "github_pat_", "tskey-", "ssh-ed25519 ", "ssh-rsa "] {
+            assert!(
+                !file.body.contains(marker),
+                "{}: carries `{marker}`, which is the shape of a credential. Values reach \
+                 a node through the browser, never through an artifact (§12.2)",
+                file.path
+            );
+        }
+    }
 }

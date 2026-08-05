@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use cluster_ctl::api::{Api, AuthConfig, NodeEndpoint};
 use cluster_ctl::auth::Authorizer;
+use cluster_ctl::enrolment::Enrolment;
 use cluster_ctl::github::GitHub;
 use cluster_ctl::reclaim::{decide, Action, RolloutStatus, Thresholds};
 use cluster_ctl::session::{DirtyObservation, Session, SessionState};
@@ -387,8 +388,26 @@ fn api_from_environment() -> Result<Api, ApiError> {
                 "https://github.com/login/oauth/access_token",
             ),
         },
+        // Where each enrolled secret goes (§12.2). Read from the rendered
+        // policy, so this binary carries no destination of its own --- and a
+        // control plane that cannot read it says so rather than silently
+        // offering an empty form.
+        enrolment: {
+            let path = env_or("CLUSTER_ENROLMENT", "/usr/lib/cluster/enrolment.conf");
+            let text =
+                std::fs::read_to_string(&path).map_err(|e| ApiError::EnrolmentUnavailable {
+                    because: format!("reading {path}: {e}"),
+                })?;
+            Enrolment::parse(&text)?
+        },
+        enrolment_root: env_or("CLUSTER_ENROLMENT_ROOT", "/var/lib/cluster-ctl/enrolment"),
+        // Only the storage node advertises the management subnet, and the mesh
+        // is never advertised (§4.5).
+        advertise_routes: std::env::var("CLUSTER_ADVERTISE_ROUTES")
+            .ok()
+            .filter(|p| !p.is_empty()),
         capacity: Capacity {
-            target: env_or("CLUSTER_MIGRATION_TARGET", "n1"),
+            target: env_or("CLUSTER_MIGRATION_TARGET", "storage"),
             never_receives: env_list("CLUSTER_NEVER_RECEIVES"),
             memory_cap_gib: env_number("CLUSTER_MIGRATION_MEMORY_CAP_GIB", 12),
         },

@@ -13,7 +13,13 @@
 # carries the @@PLACEHOLDER@@ names and never a value --- a kickstart is a
 # plain-text file in a repository, and a secret in one is a secret published
 # (§12.2, CD-07).
-contents = "@@RENDERED_KICKSTART@@"
+# A multi-line basic string. A kickstart has newlines in it and a single-quoted
+# TOML string cannot, which the substitution found by producing a config that
+# would not parse --- the sort of thing that fails at ISO build time and nowhere
+# earlier.
+contents = """
+@@RENDERED_KICKSTART@@
+"""
 
 [customizations.installer.modules]
 # Everything the installer does is in the kickstart. An interactive module would
