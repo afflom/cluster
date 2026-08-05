@@ -50,7 +50,8 @@ use cluster_init::net::{self, Wire};
 use cluster_init::role::{self, Device, Registry};
 use cluster_init::units::{self, Metrics, PeeredPort};
 use cluster_init::{
-    InitError, APPLIED_KARGS_PATH, POLICY_PATH, REGISTRY_PATH, RUNTIME_DIR, RUNTIME_NETWORK_DIR, SECRET_PATH,
+    InitError, APPLIED_KARGS_PATH, POLICY_PATH, REGISTRY_PATH, RUNTIME_DIR, RUNTIME_NETWORK_DIR,
+    SECRET_PATH,
 };
 
 fn main() -> ExitCode {
